@@ -4,7 +4,7 @@
 
 Alexa+ Hackathon project — an AI agent that recovers disrupted trips across flights, hotels, rides and notifications with **explicit user approval** before any consequential action.
 
-## MVP Status (Phases 0–8)
+## Status: MVP Complete (Phases 0–9)
 
 | Phase | Status | Summary |
 |-------|--------|---------|
@@ -17,11 +17,21 @@ Alexa+ Hackathon project — an AI agent that recovers disrupted trips across fl
 | 6 Agent Skill + demo mode | ✅ | SKILL.md, deterministic orchestrator |
 | 7 Deployment / QA | ✅ | Docker, health, CI, tests |
 | 8 Demo polish | ✅ | Full UI journey, demo script |
+| 9 Submission ready | ✅ | Checklist, product description, run scripts |
 
 ## Quick Start (Windows)
 
 ```powershell
-cd trip-rescue
+# Terminal 1 – backend
+.\run-backend.ps1
+
+# Terminal 2 – frontend
+.\run-frontend.ps1
+```
+
+Or manually:
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
@@ -33,11 +43,11 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173
+Open **http://localhost:5173**
 
 ## Full demo journey
 
-1. **Disruption** – 4h delay, connection/hotel/ride at risk  
+1. **Disruption** – 4h delay; connection / hotel / ride at risk  
 2. **Alternatives** – ranked by preference, cost, overnight  
 3. **Rescue plan** – flight + hotel + ride + notification draft  
 4. **Approve** – hash-bound; server rejects mismatch / no approval  
@@ -67,6 +77,19 @@ Open http://localhost:5173
 from agent.orchestrator import run_demo
 log = run_demo("FLIGHT-A")  # real tools, fixed sequence
 ```
+
+## Docs
+
+- `docs/demo-script.md` – 2:45 judge demo  
+- `docs/submission-checklist.md` – Phase 9 checklist  
+- `docs/product-description.md` – submission form text  
+- `docs/architecture.md` – system design  
+- `docs/friction-log.md` – genuine platform friction  
+- `skill/trip-rescue/SKILL.md` – agent skill  
+
+## What is simulated
+
+Mock flight / hotel / ride / message providers. No real airline bookings or payments.
 
 ## License
 
