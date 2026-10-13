@@ -2,66 +2,32 @@
 
 **One request. One coordinated recovery. You're always in control.**
 
-Alexa+ Hackathon project — an AI agent that recovers disrupted trips across flights, hotels, rides and notifications with explicit user approval before any consequential action.
+Alexa+ Hackathon project — an AI agent that recovers disrupted trips across flights, hotels, rides and notifications with **explicit user approval** before any consequential action.
 
-## Problem
+## MVP Status (Phases 0–8)
 
-A delayed flight can cascade: missed connections, invalid hotel check-ins, wrong pickup times, people waiting. Travellers are forced to coordinate multiple services under stress.
-
-## Solution
-
-User says: *"Alexa, my flight is delayed. Fix my trip."*
-
-Trip Rescue AI:
-
-1. Retrieves the itinerary and detects consequences
-2. Searches & ranks alternatives against saved preferences
-3. Builds a complete multi-service rescue plan
-4. Requires explicit approval of the exact plan (hash-bound)
-5. Executes only the approved version with rollback on failure
-6. Remembers preferences for the next trip
-
-## Architecture (High Level)
-
-```
-Traveller → Alexa+ / Browser Simulator
-                ↓
-           Agent Skill
-                ↓
-           MCP Client  ──Streamable HTTP──►  MCP Server (Python)
-                                              ├── Tool Registry
-                                              ├── Plan Engine
-                                              ├── Approval Service
-                                              └── Mock Providers (Flight/Hotel/Ride/Message)
-                                                    ↓
-                                               SQLite
-```
-
-## Tech Stack
-
-| Layer        | Technology                          |
-|--------------|-------------------------------------|
-| Frontend     | React + TypeScript + Vite           |
-| Backend      | Python 3.12 + Official MCP SDK      |
-| Transport    | Streamable HTTP                     |
-| Database     | SQLite                              |
-| Validation   | Pydantic                            |
-| Testing      | pytest + Playwright                 |
+| Phase | Status | Summary |
+|-------|--------|---------|
+| 0 Scaffold | ✅ | Repo, docs, friction-log |
+| 1 MCP foundation | ✅ | FastMCP server, Streamable HTTP, tools |
+| 2 Data + mocks | ✅ | SQLite, 4h-delay scenario, providers |
+| 3 Plan engine | ✅ | Versioned plans + SHA-256 hash |
+| 4 Approval + execution | ✅ | Hash-bound approval, saga, rollback |
+| 5 Memory + notifications | ✅ | Preferences, draft/send with approval |
+| 6 Agent Skill + demo mode | ✅ | SKILL.md, deterministic orchestrator |
+| 7 Deployment / QA | ✅ | Docker, health, CI, tests |
+| 8 Demo polish | ✅ | Full UI journey, demo script |
 
 ## Quick Start (Windows)
 
 ```powershell
-# Clone
-git clone https://github.com/<you>/trip-rescue.git
 cd trip-rescue
-
-# Backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
-uvicorn server.app:app --reload --port 8000
+pip install -e ".[dev]"
+uvicorn server.http_facade:app --reload --port 8000
 
-# Frontend (new terminal)
+# new terminal
 cd simulator
 npm install
 npm run dev
@@ -69,30 +35,38 @@ npm run dev
 
 Open http://localhost:5173
 
-## Demo Scenario
+## Full demo journey
 
-Fictional traveller **Alex** (Delhi → New York) has a 4-hour delay on the first leg. The agent detects impact on connection, hotel and airport pickup, proposes ranked alternatives, builds a full recovery plan, waits for approval, executes, and saves preferences.
+1. **Disruption** – 4h delay, connection/hotel/ride at risk  
+2. **Alternatives** – ranked by preference, cost, overnight  
+3. **Rescue plan** – flight + hotel + ride + notification draft  
+4. **Approve** – hash-bound; server rejects mismatch / no approval  
+5. **Execute** – step results; optional forced failure + compensation  
+6. **Notifications** – draft → separate send approval  
+7. **Memory** – preferences persist and can be updated  
 
-## Safety Guarantees
+## Safety guarantees
 
-- Plan generation ≠ execution
-- Approval is bound to a cryptographic plan hash
-- Stale / modified / expired approvals are rejected
-- Idempotent execution
-- Compensating actions on partial failure
-- Server (not LLM) enforces authorization
+- Plan generation ≠ execution  
+- Approval bound to cryptographic plan hash  
+- Stale / modified / expired approvals rejected  
+- Idempotent execution  
+- Compensating actions on partial failure  
+- Notifications require their own approval  
+- Server (not LLM) enforces authorization  
 
-## Project Status (Phases 0–3 Complete)
+## Tools (MCP)
 
-- [x] Phase 0 – Requirements & scaffold
-- [x] Phase 1 – MCP vertical slice
-- [x] Phase 2 – Data model + mock providers
-- [x] Phase 3 – Rescue-plan engine
-- [ ] Phase 4 – Approval + execution + rollback
-- [ ] Phase 5 – Memory + notifications + full journey
-- [ ] Phase 6 – Agent Skill + MCP Apps
-- [ ] Phase 7 – Deployment & QA
-- [ ] Phase 8–9 – Demo & submission
+**Read:** `get_trip`, `check_flight_status`, `get_preferences`, `list_preferences`, `search_alternatives`, `get_plan_status`  
+**Propose:** `propose_rescue_plan`, `draft_notifications`, `save_preference`  
+**Commit:** `approve_rescue_plan`, `execute_rescue_plan`, `send_notifications`
+
+## Deterministic demo mode
+
+```python
+from agent.orchestrator import run_demo
+log = run_demo("FLIGHT-A")  # real tools, fixed sequence
+```
 
 ## License
 

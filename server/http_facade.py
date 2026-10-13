@@ -1,4 +1,4 @@
-"""Thin FastAPI facade so the React simulator can call the same tools via HTTP."""
+"""Thin FastAPI facade for the React simulator."""
 from __future__ import annotations
 
 from fastapi import FastAPI
@@ -8,7 +8,7 @@ from typing import Any
 
 from server.tools import trip_tools
 
-app = FastAPI(title="Trip Rescue AI – Tool Facade")
+app = FastAPI(title="Trip Rescue AI", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,11 +27,12 @@ class ToolArgs(BaseModel):
     plan_id: str | None = None
     plan_hash: str | None = None
     force_fail_step: str | None = None
+    approved: bool | None = None
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "TripRescueAI", "phase": "4"}
+    return {"status": "ok", "service": "TripRescueAI", "phase": "5-8"}
 
 
 @app.post("/tools/{tool_name}")
@@ -43,6 +44,7 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
         "get_trip": lambda: trip_tools.get_trip(args.get("trip_id", "TRIP-100")),
         "check_flight_status": lambda: trip_tools.check_flight_status(args.get("trip_id", "TRIP-100")),
         "get_preferences": lambda: trip_tools.get_preferences(args.get("user_id", "user-alex")),
+        "list_preferences": lambda: trip_tools.list_preferences(args.get("user_id", "user-alex")),
         "search_alternatives": lambda: trip_tools.search_alternatives(
             args.get("trip_id", "TRIP-100"), args.get("user_id", "user-alex")
         ),
@@ -58,11 +60,15 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
             args["plan_id"], args["plan_hash"], args.get("user_id", "user-alex")
         ),
         "execute_rescue_plan": lambda: trip_tools.execute_rescue_plan(
-            args["plan_id"],
-            args.get("user_id", "user-alex"),
-            args.get("force_fail_step"),
+            args["plan_id"], args.get("user_id", "user-alex"), args.get("force_fail_step"),
         ),
         "get_plan_status": lambda: trip_tools.get_plan_status(args["plan_id"]),
+        "draft_notifications": lambda: trip_tools.draft_notifications(
+            args["plan_id"], args.get("user_id", "user-alex")
+        ),
+        "send_notifications": lambda: trip_tools.send_notifications(
+            args["plan_id"], args.get("approved", False), args.get("user_id", "user-alex")
+        ),
     }
 
     if tool_name not in dispatch:

@@ -108,3 +108,28 @@ def execute_rescue_plan(
 def get_plan_status(plan_id: str) -> dict:
     """Return plan status and execution step results."""
     return execution_service.get_plan_status(plan_id)
+
+
+# ---------- Phase 5: Notifications ----------
+
+from server.domain import notification_service
+
+
+def draft_notifications(plan_id: str, user_id: str = "user-alex") -> dict:
+    """Draft notification messages for review. Does not send."""
+    return notification_service.draft_notifications(plan_id, user_id)
+
+
+def send_notifications(
+    plan_id: str,
+    approved: bool = False,
+    user_id: str = "user-alex",
+) -> dict:
+    """Send reviewed notifications. Requires approved=True."""
+    return notification_service.send_notifications(plan_id, approved, user_id)
+
+
+def list_preferences(user_id: str = "user-alex") -> dict:
+    """List all saved preferences for the user (memory demo)."""
+    prefs = get_preferences(user_id)
+    return {"user_id": user_id, "preferences": prefs, "count": len(prefs)}
