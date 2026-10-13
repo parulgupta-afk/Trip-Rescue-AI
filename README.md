@@ -9,7 +9,7 @@ Alexa+ Hackathon project — an AI agent that recovers disrupted trips across fl
 | Phase | Status | Summary |
 | --- | --- | --- |
 | 0 Scaffold | ✅ | Repo, docs, friction-log |
-| 1 MCP foundation | ✅ | FastMCP server, Streamable HTTP, tools |
+| 1 MCP foundation | ✅ | MCPServer (mcp 2.x), Streamable HTTP path, tools |
 | 2 Data + mocks | ✅ | SQLite, 4h-delay scenario, providers |
 | 3 Plan engine | ✅ | Versioned plans + SHA-256 hash |
 | 4 Approval + execution | ✅ | Hash-bound approval, saga, rollback |
@@ -18,6 +18,16 @@ Alexa+ Hackathon project — an AI agent that recovers disrupted trips across fl
 | 7 Deployment / QA | ✅ | Docker, health, CI, tests |
 | 8 Demo polish | ✅ | Full UI journey, demo script |
 | 9 Submission ready | ✅ | Checklist, product description, run scripts |
+
+## Alexa+ demonstration path
+
+This submission uses the **browser Recovery Cockpit simulator** as the primary demo client.
+It calls the same domain tools registered on the MCP server via an HTTP facade.
+
+- **Verified:** tool registration on MCPServer, domain approval/execution, HTTP E2E
+- **Not claimed:** live Alexa device skill, official Alexa+ host runtime, real airline APIs
+
+Judges should evaluate agent tool use, approval safety, and failure handling in the simulator.
 
 ## Provider honesty
 

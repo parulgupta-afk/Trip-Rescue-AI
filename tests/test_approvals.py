@@ -63,3 +63,27 @@ def test_stale_plan_version():
     # But execute plan2 without approval should fail
     result = trip_tools.execute_rescue_plan(plan2["plan_id"])
     assert result["ok"] is False
+
+
+def test_expired_approval_rejected():
+    """Approval past expires_at must not authorize execution."""
+    from datetime import datetime, timezone, timedelta
+    from server.store.database import db_session
+    from server.domain import execution_service
+
+    execution_service.set_force_fail(None)
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    approval = trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    assert approval["ok"] is True
+
+    # Force expiry in DB
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = ? WHERE plan_id = ?",
+            (past, plan["plan_id"]),
+        )
+
+    result = trip_tools.execute_rescue_plan(plan["plan_id"])
+    assert result["ok"] is False
+    assert result["error"] in ("NO_VALID_APPROVAL", "NOT_APPROVED")

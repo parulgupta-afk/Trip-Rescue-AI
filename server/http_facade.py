@@ -32,7 +32,7 @@ class ToolArgs(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "TripRescueAI", "phase": "5-8"}
+    return {"status": "ok", "service": "TripRescueAI", "phase": "mvp", "providers": "simulated"}
 
 
 @app.post("/tools/{tool_name}")
