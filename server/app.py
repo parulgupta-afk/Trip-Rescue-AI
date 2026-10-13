@@ -1,10 +1,16 @@
-"""Trip Rescue AI – MCP Server entrypoint (Phases 0–8)."""
+"""
+Trip Rescue AI – MCP Server entrypoint (MCP 2.x compatible).
+
+Uses MCPServer (FastMCP was renamed in mcp>=2).
+Tools call the same domain functions as the HTTP facade.
+"""
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+
 from server.tools import trip_tools
 
-mcp = FastMCP(
+mcp = MCPServer(
     "TripRescueAI",
     instructions=(
         "Trip Rescue AI coordinates recovery of disrupted trips. "
@@ -100,4 +106,5 @@ def send_notifications(
 
 
 if __name__ == "__main__":
+    # Streamable HTTP transport (MCP 2.x)
     mcp.run(transport="streamable-http")

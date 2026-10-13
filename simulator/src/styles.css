@@ -392,3 +392,418 @@ button:disabled { cursor: wait; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
+
+/* =========================================================
+   SPACIOUS / PROFESSIONAL OVERRIDES
+   More air, clearer hierarchy, less visual cluster
+   ========================================================= */
+
+:root {
+  --radius: 20px;
+  --shadow: 0 20px 48px rgba(25, 28, 30, 0.05), 0 2px 6px rgba(25, 28, 30, 0.03);
+}
+
+/* Sidebar – wider, more breathing room */
+.sidebar {
+  width: 260px;
+  flex-basis: 260px;
+  padding: 32px 20px 24px;
+  gap: 8px;
+}
+.sidebar-header { padding: 0 8px 36px; }
+.trip-context {
+  margin: 0 4px 32px;
+  padding: 20px 18px;
+  border-radius: 16px;
+}
+.sidebar-nav {
+  display: grid;
+  gap: 6px;
+  padding: 0 4px;
+}
+.nav-item {
+  padding: 12px 14px;
+  border-radius: 12px;
+  gap: 12px;
+}
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 28px;
+  display: grid;
+  gap: 16px;
+}
+.mode-card {
+  padding: 18px 16px;
+  border-radius: 14px;
+}
+.mode-card p {
+  margin: 12px 0 16px;
+  line-height: 1.55;
+  font-size: 12.5px;
+}
+
+/* Top bar – taller, calmer */
+.topbar {
+  height: 76px;
+  padding: 0 48px;
+}
+.breadcrumbs { gap: 12px; }
+.topbar-actions { gap: 12px; }
+
+/* Main workspace – more margin and column gap */
+.workspace-grid {
+  max-width: 1440px;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 48px;
+  padding: 48px 48px 64px;
+}
+.stage-column { gap: 36px; }
+.activity-column {
+  gap: 24px;
+  top: 32px;
+}
+
+/* Hero – more space under headline */
+.hero-section {
+  gap: 40px;
+  padding-bottom: 12px;
+  margin-bottom: 8px;
+}
+.hero-copy h1 {
+  margin: 20px 0 18px;
+  max-width: 720px;
+  line-height: 1.02;
+}
+.hero-lede {
+  max-width: 600px;
+  font-size: 17px;
+  line-height: 1.65;
+}
+.hero-meta {
+  margin-top: 28px;
+  gap: 20px;
+}
+.impact-card {
+  min-height: 240px;
+  padding: 24px 22px;
+  border-radius: 20px;
+}
+.impact-number { margin-top: 32px; }
+.impact-card p { margin: 12px 0 20px; }
+
+/* Section heads */
+.section-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+}
+.section-head h2 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+/* Alternative cards – roomier grid and internal padding */
+.alternatives-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+.alternative-card {
+  padding: 20px 18px 18px;
+  border-radius: 16px;
+  gap: 12px;
+  min-height: 220px;
+}
+.alternative-topline { margin-bottom: 4px; }
+.alternative-route { margin: 4px 0 8px; }
+.alternative-times { margin: 8px 0; gap: 10px; }
+.alternative-meta {
+  gap: 10px;
+  margin: 6px 0 10px;
+  font-size: 11px;
+}
+.alternative-bottom {
+  margin-top: auto;
+  padding-top: 12px;
+  gap: 12px;
+}
+.tag-row {
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.mini-tag {
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 9px;
+}
+
+/* Plan card – generous internal spacing */
+.plan-card,
+.surface-card,
+.activity-card {
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+.plan-card-head {
+  padding: 24px 28px 20px;
+  gap: 16px;
+}
+.plan-items {
+  display: grid;
+  gap: 0;
+  padding: 8px 12px;
+}
+.plan-item {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 18px 16px;
+  border-radius: 14px;
+  margin: 4px 8px;
+}
+.plan-item-copy strong {
+  font-size: 14px;
+  display: block;
+  margin-bottom: 4px;
+}
+.plan-item-copy small {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #6f736c;
+}
+.plan-total {
+  margin: 12px 20px 8px;
+  padding: 20px 22px;
+  border-radius: 16px;
+  gap: 16px;
+}
+.plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 20px 28px 12px;
+}
+.plan-disclaimer {
+  padding: 12px 28px 24px;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.primary-button,
+.secondary-button {
+  min-height: 48px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+.secondary-button { font-size: 12px; }
+
+/* Activity column – less cramped timeline */
+.activity-header {
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+}
+.activity-header h2 { font-size: 22px; }
+.activity-card-head {
+  padding: 20px 20px 18px;
+  gap: 14px;
+}
+.activity-card-head strong { font-size: 13px; }
+.activity-card-head small {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.event-list {
+  display: grid;
+  gap: 0;
+  padding: 8px 12px 16px;
+}
+.event-row {
+  padding: 14px 12px;
+  margin: 2px 4px;
+  border-radius: 12px;
+  gap: 12px;
+}
+.event-row strong { font-size: 12px; }
+.event-row small {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Preferences drawer – more air */
+.drawer {
+  max-width: 420px;
+  padding: 32px 28px;
+}
+.drawer-intro {
+  margin: 16px 0 24px;
+  line-height: 1.6;
+  font-size: 14px;
+}
+.preference-list { display: grid; gap: 10px; }
+.preference-row {
+  padding: 16px 18px;
+  border-radius: 14px;
+}
+.drawer-note {
+  margin-top: 24px;
+  padding: 16px;
+  border-radius: 14px;
+  gap: 12px;
+  line-height: 1.5;
+}
+.drawer-actions {
+  margin-top: 28px;
+  gap: 16px;
+}
+
+/* Toast – slightly larger, calmer */
+.toast {
+  padding: 14px 18px;
+  border-radius: 14px;
+  gap: 12px;
+  font-size: 13px;
+}
+
+/* Responsive: stack activity under stage on smaller screens */
+@media (max-width: 1180px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
+    gap: 40px;
+    padding: 40px 32px 56px;
+  }
+  .activity-column { position: static; }
+  .alternatives-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .hero-section {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    flex-basis: auto;
+    min-height: auto;
+    padding: 20px 16px;
+  }
+  .workspace-grid { padding: 28px 20px 48px; }
+  .topbar { padding: 0 20px; height: 64px; }
+}
+
+/* Extra polish: allow text to breathe, reduce density further */
+.section-heading { gap: 24px; margin-bottom: 8px; }
+.section-heading h2 { font-size: 23px; margin-top: 8px; }
+.route-card.panel,
+.panel {
+  padding: 28px 28px 24px;
+  border-radius: 20px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.route-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 24px;
+  padding-top: 8px;
+}
+.route-stop {
+  padding: 16px 12px;
+  border-radius: 14px;
+  background: var(--warm-white);
+}
+.route-stop strong { display: block; margin: 8px 0 6px; font-size: 15px; }
+.route-stop small { font-size: 12px; line-height: 1.4; color: #7a7d76; }
+
+.alternatives-grid { gap: 20px !important; }
+.alternative-card {
+  display: grid !important;
+  gap: 10px !important;
+  padding: 22px 20px !important;
+  min-height: 240px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(25, 28, 30, 0.04);
+}
+.alternative-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+.fit-copy {
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+}
+
+.plan-items { padding: 12px 20px !important; }
+.plan-item {
+  grid-template-columns: 44px minmax(0, 1fr) 100px !important;
+  gap: 16px !important;
+  min-height: 84px !important;
+  padding: 16px 12px !important;
+  border-bottom: 1px solid var(--line) !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+}
+.plan-item:last-child { border-bottom: none !important; }
+.plan-item-copy strong {
+  white-space: normal !important;
+  font-size: 13.5px !important;
+  line-height: 1.35 !important;
+}
+.plan-item-copy small {
+  white-space: normal !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.plan-header,
+.plan-card-head {
+  padding: 28px 28px 22px !important;
+}
+.plan-total {
+  margin: 16px 28px !important;
+  padding: 22px 24px !important;
+}
+.plan-actions {
+  padding: 16px 28px 8px !important;
+  gap: 14px !important;
+}
+.plan-disclaimer {
+  padding: 14px 28px 28px !important;
+  font-size: 11.5px !important;
+  line-height: 1.55 !important;
+}
+
+.event-list { padding: 10px 20px 18px !important; }
+.event-row {
+  padding: 14px 4px !important;
+  gap: 12px !important;
+}
+.event-row:not(:last-child)::before {
+  top: 32px !important;
+  bottom: -14px !important;
+}
+
+.preferences-drawer {
+  width: min(440px, 100%) !important;
+  padding: 36px 32px !important;
+}
+.drawer-intro { margin: 18px 0 28px !important; line-height: 1.65 !important; }
+.preference-row { padding: 18px 18px !important; margin-bottom: 8px; border-radius: 14px; }
+
+/* Soften overall density on the canvas */
+.workspace { background: linear-gradient(180deg, #f7f4ee 0%, #f3f0e9 100%); }

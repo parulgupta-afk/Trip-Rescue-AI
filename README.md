@@ -19,6 +19,16 @@ Alexa+ Hackathon project — an AI agent that recovers disrupted trips across fl
 | 8 Demo polish | ✅ | Full UI journey, demo script |
 | 9 Submission ready | ✅ | Checklist, product description, run scripts |
 
+## Provider honesty
+
+All flight, hotel, ride, and messaging operations use **local mock providers**.  
+The UI and logs must never imply a real airline or hotel API was contacted.
+
+## MCP note
+
+The MCP server uses **MCP 2.x `MCPServer`** (FastMCP was renamed).  
+The browser demo talks to the **HTTP tool facade** (`server/http_facade.py`) which calls the same domain functions the MCP tools use.
+
 ## Quick Start (Windows)
 
 ```powershell

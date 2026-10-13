@@ -27,6 +27,9 @@ export type ToolEvent = {
   detail: string
 }
 
+/** All provider results in this demo are SIMULATED local mocks — not real airline/hotel APIs. */
+export const PROVIDER_MODE = "SIMULATED" as const
+
 export const trip = {
   code: 'TRP-00419',
   date: '18–22 JUN 2025',
