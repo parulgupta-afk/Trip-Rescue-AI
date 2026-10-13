@@ -1,9 +1,3 @@
-/**
- * Simple HTTP client that talks to the local MCP / FastAPI-style endpoints.
- * In a full MCP client this would use the Streamable HTTP protocol;
- * for the hackathon simulator we expose a thin REST facade that calls the same tools.
- */
-
 const BASE = import.meta.env.VITE_MCP_URL || 'http://localhost:8000'
 
 export type ToolCall = {
@@ -38,4 +32,12 @@ export const mcp = {
     callTool('propose_rescue_plan', { selected_flight_id: selectedFlightId }),
   savePreference: (key: string, value: unknown) =>
     callTool('save_preference', { key, value }),
+  approveRescuePlan: (planId: string, planHash: string) =>
+    callTool('approve_rescue_plan', { plan_id: planId, plan_hash: planHash }),
+  executeRescuePlan: (planId: string, forceFailStep?: string) =>
+    callTool('execute_rescue_plan', {
+      plan_id: planId,
+      ...(forceFailStep ? { force_fail_step: forceFailStep } : {}),
+    }),
+  getPlanStatus: (planId: string) => callTool('get_plan_status', { plan_id: planId }),
 }

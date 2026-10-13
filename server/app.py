@@ -1,7 +1,5 @@
 """
 Trip Rescue AI – MCP Server entrypoint.
-
-Exposes tools via the official MCP Python SDK with Streamable HTTP transport.
 """
 from __future__ import annotations
 
@@ -18,7 +16,6 @@ mcp = FastMCP(
     ),
 )
 
-# ---------- Register tools ----------
 
 @mcp.tool()
 def get_trip(trip_id: str = "TRIP-100") -> dict:
@@ -67,7 +64,37 @@ def save_preference(
     return trip_tools.save_preference(key, value, user_id)
 
 
-# For local development: `python -m server.app` or uvicorn
+@mcp.tool()
+def approve_rescue_plan(
+    plan_id: str,
+    plan_hash: str,
+    user_id: str = "user-alex",
+) -> dict:
+    """
+    Record explicit approval of the exact plan.
+    The plan_hash must match the current plan; otherwise approval is rejected.
+    """
+    return trip_tools.approve_rescue_plan(plan_id, plan_hash, user_id)
+
+
+@mcp.tool()
+def execute_rescue_plan(
+    plan_id: str,
+    user_id: str = "user-alex",
+    force_fail_step: str | None = None,
+) -> dict:
+    """
+    Execute an approved plan. Requires a valid, unexpired, hash-matching approval.
+    Optional force_fail_step (e.g. 'reschedule_ride') triggers compensation demo.
+    """
+    return trip_tools.execute_rescue_plan(plan_id, user_id, force_fail_step)
+
+
+@mcp.tool()
+def get_plan_status(plan_id: str) -> dict:
+    """Retrieve execution progress and results for a plan."""
+    return trip_tools.get_plan_status(plan_id)
+
+
 if __name__ == "__main__":
-    # Streamable HTTP is the default transport in recent FastMCP
     mcp.run(transport="streamable-http")

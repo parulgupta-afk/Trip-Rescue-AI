@@ -73,3 +73,38 @@ def save_preference(
     """Persist a user preference."""
     repo.save_preference(user_id, key, value, source)
     return {"status": "saved", "key": key, "value": value}
+
+
+# ---------- Phase 4: Approval + Execution ----------
+
+from server.domain import approval_service, execution_service
+
+
+def approve_rescue_plan(
+    plan_id: str,
+    plan_hash: str,
+    user_id: str = "user-alex",
+) -> dict:
+    """Record explicit approval of the exact plan (hash-bound)."""
+    return approval_service.approve_plan(plan_id, plan_hash, user_id)
+
+
+def execute_rescue_plan(
+    plan_id: str,
+    user_id: str = "user-alex",
+    force_fail_step: str | None = None,
+) -> dict:
+    """
+    Execute an approved plan.
+    Optionally force a failure on a named step for demo (e.g. 'reschedule_ride').
+    """
+    if force_fail_step:
+        execution_service.set_force_fail(force_fail_step)
+    else:
+        execution_service.set_force_fail(None)
+    return execution_service.execute_plan(plan_id, user_id)
+
+
+def get_plan_status(plan_id: str) -> dict:
+    """Return plan status and execution step results."""
+    return execution_service.get_plan_status(plan_id)

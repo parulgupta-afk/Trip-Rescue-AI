@@ -1,7 +1,4 @@
-"""
-Thin FastAPI facade so the React simulator can call the same tools
-via simple HTTP POST while we still expose a real MCP server.
-"""
+"""Thin FastAPI facade so the React simulator can call the same tools via HTTP."""
 from __future__ import annotations
 
 from fastapi import FastAPI
@@ -27,11 +24,14 @@ class ToolArgs(BaseModel):
     selected_flight_id: str | None = None
     key: str | None = None
     value: Any = None
+    plan_id: str | None = None
+    plan_hash: str | None = None
+    force_fail_step: str | None = None
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "TripRescueAI"}
+    return {"status": "ok", "service": "TripRescueAI", "phase": "4"}
 
 
 @app.post("/tools/{tool_name}")
@@ -54,6 +54,15 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
         "save_preference": lambda: trip_tools.save_preference(
             args["key"], args["value"], args.get("user_id", "user-alex")
         ),
+        "approve_rescue_plan": lambda: trip_tools.approve_rescue_plan(
+            args["plan_id"], args["plan_hash"], args.get("user_id", "user-alex")
+        ),
+        "execute_rescue_plan": lambda: trip_tools.execute_rescue_plan(
+            args["plan_id"],
+            args.get("user_id", "user-alex"),
+            args.get("force_fail_step"),
+        ),
+        "get_plan_status": lambda: trip_tools.get_plan_status(args["plan_id"]),
     }
 
     if tool_name not in dispatch:
