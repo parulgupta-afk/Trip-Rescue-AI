@@ -22,6 +22,7 @@ build/
 node_modules/
 simulator/dist/
 simulator/.vite/
+*.tsbuildinfo
 *.local
 .env
 .env.*

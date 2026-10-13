@@ -7,7 +7,7 @@ Alexa+ Hackathon project — an AI agent that recovers disrupted trips across fl
 ## Status: MVP Complete (Phases 0–9)
 
 | Phase | Status | Summary |
-|-------|--------|---------|
+| --- | --- | --- |
 | 0 Scaffold | ✅ | Repo, docs, friction-log |
 | 1 MCP foundation | ✅ | FastMCP server, Streamable HTTP, tools |
 | 2 Data + mocks | ✅ | SQLite, 4h-delay scenario, providers |
@@ -53,7 +53,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**
+Open **<http://localhost:5173>**
 
 ## Full demo journey
 
