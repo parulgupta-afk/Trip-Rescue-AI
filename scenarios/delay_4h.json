@@ -1,0 +1,13 @@
+{
+  "name": "4-hour delay scenario",
+  "traveller": "Alex",
+  "trip_id": "TRIP-100",
+  "user_id": "user-alex",
+  "disruption": {
+    "flight": "EX-401",
+    "delay_hours": 4,
+    "impact": ["connection_at_risk", "hotel_checkin", "airport_pickup"]
+  },
+  "expected_alternatives": ["FLIGHT-A", "FLIGHT-B", "FLIGHT-C"],
+  "recommended": "FLIGHT-A"
+}
