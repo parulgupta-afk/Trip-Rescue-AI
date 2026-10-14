@@ -83,9 +83,31 @@ def execute_plan(
             "message": "Approval hash does not match current plan. Re-approve.",
         }
 
-    # Mark executing + consume approval
+    # Atomic claim: only one worker may move approved → executing
     with db_session() as conn:
-        conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan_id,))
+        cur = conn.execute(
+            "UPDATE plans SET status = 'executing' WHERE id = ? AND status = 'approved'",
+            (plan_id,),
+        )
+        if cur.rowcount != 1:
+            # Another request claimed it, or status changed
+            current = repo.get_plan(plan_id)
+            st = (current or {}).get("status")
+            if st in ("succeeded", "failed_rolled_back", "partially_failed", "executing"):
+                steps = _get_steps(plan_id)
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "plan_id": plan_id,
+                    "status": st,
+                    "steps": steps,
+                    "message": f"Plan already claimed or finished (status={st}).",
+                }
+            return {
+                "ok": False,
+                "error": "CLAIM_FAILED",
+                "message": f"Could not claim plan for execution (status={st}).",
+            }
     approval_service.consume_approval(approval["id"])
 
     actions = plan["actions"]
@@ -265,4 +287,40 @@ def get_plan_status(plan_id: str) -> dict[str, Any]:
         "total_cost_delta": plan["total_cost_delta"],
         "plan_hash": plan["plan_hash"],
         "steps": steps,
+    }
+
+
+def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
+    """
+    Mark a plan stuck in 'executing' as partially_failed when no terminal outcome exists.
+    Does not invent successful provider results.
+    """
+    plan = repo.get_plan(plan_id)
+    if not plan:
+        return {"ok": False, "error": "PLAN_NOT_FOUND"}
+    if plan["user_id"] != user_id:
+        return {"ok": False, "error": "OWNERSHIP"}
+    if plan["status"] != "executing":
+        return {
+            "ok": True,
+            "plan_id": plan_id,
+            "status": plan["status"],
+            "message": "Plan is not stuck in executing.",
+        }
+    steps = _get_steps(plan_id)
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE plans SET status = 'partially_failed' WHERE id = ? AND status = 'executing'",
+            (plan_id,),
+        )
+    return {
+        "ok": True,
+        "plan_id": plan_id,
+        "status": "partially_failed",
+        "steps": steps,
+        "message": (
+            "Plan was left in executing (e.g. process crash). "
+            "Marked partially_failed. Review steps; do not assume providers completed."
+        ),
+        "provider": "simulated",
     }

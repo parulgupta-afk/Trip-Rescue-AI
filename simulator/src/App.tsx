@@ -228,7 +228,7 @@ function App() {
   const resetDemo = () => {
     setStage('review')
     setRawCallsOpen(false)
-    announce('Demo reset to the approval checkpoint.')
+    announce('UI reset to review. Backend plan history is unchanged.')
   }
 
   const togglePreference = async (key: keyof typeof preferences, values: string[]) => {

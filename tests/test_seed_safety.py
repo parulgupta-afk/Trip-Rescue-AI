@@ -43,3 +43,12 @@ def test_budget_rejection():
     result = trip_tools.propose_rescue_plan("FLIGHT-A")
     assert result.get("ok") is False or "error" in result
     assert "exceeds" in str(result.get("error", "")).lower() or "budget" in str(result.get("error", "")).lower() or "cost" in str(result.get("error", "")).lower()
+
+
+def test_budget_exact_boundary_allowed():
+    """Cost equal to max should be allowed."""
+    ensure_schema()
+    repo.seed_demo_data(wipe=True)
+    trip_tools.save_preference("max_additional_cost", 2000)  # FLIGHT-A cost
+    result = trip_tools.propose_rescue_plan("FLIGHT-A")
+    assert "plan_id" in result and "error" not in result

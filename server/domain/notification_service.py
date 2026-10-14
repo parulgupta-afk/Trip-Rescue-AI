@@ -90,6 +90,13 @@ def approve_notifications(
     if plan["user_id"] != user_id:
         return {"ok": False, "error": "OWNERSHIP", "message": "Plan does not belong to this user"}
 
+    if plan["status"] not in ("approved", "executing", "succeeded"):
+        return {
+            "ok": False,
+            "error": "INVALID_PLAN_STATUS",
+            "message": f"Cannot approve notifications for plan with status '{plan['status']}'. Plan must be approved or executed first.",
+        }
+
     with db_session() as conn:
         row = conn.execute(
             """SELECT * FROM notification_drafts
@@ -100,6 +107,8 @@ def approve_notifications(
         if not row:
             return {"ok": False, "error": "NO_DRAFT", "message": "No notification draft found"}
         draft = dict(row)
+        if draft["status"] == "sent":
+            return {"ok": False, "error": "ALREADY_SENT", "message": "Notification draft has already been sent."}
         if draft["content_hash"] != draft_hash:
             return {
                 "ok": False,
@@ -142,6 +151,20 @@ def send_notifications(
     if plan["user_id"] != user_id:
         return {"ok": False, "error": "OWNERSHIP", "message": "Plan does not belong to this user"}
 
+    if not draft_hash or not str(draft_hash).strip():
+        return {
+            "ok": False,
+            "error": "HASH_REQUIRED",
+            "message": "Notification send requires the exact draft content hash that was approved.",
+        }
+
+    if plan["status"] not in ("approved", "executing", "succeeded"):
+        return {
+            "ok": False,
+            "error": "INVALID_PLAN_STATUS",
+            "message": f"Cannot send notifications for plan with status '{plan['status']}'. Plan must be approved or executed first.",
+        }
+
     with db_session() as conn:
         draft_row = conn.execute(
             """SELECT * FROM notification_drafts
@@ -153,13 +176,13 @@ def send_notifications(
             return {"ok": False, "error": "NO_DRAFT", "message": "No notification draft found"}
         draft = dict(draft_row)
 
-        if draft_hash and draft["content_hash"] != draft_hash:
+        if draft["content_hash"] != draft_hash:
             return {
                 "ok": False,
                 "error": "HASH_MISMATCH",
                 "message": "Submitted draft hash does not match stored draft.",
             }
-        content_hash = draft["content_hash"]
+        content_hash = draft_hash
 
         # Idempotency: already sent this content
         existing_send = conn.execute(

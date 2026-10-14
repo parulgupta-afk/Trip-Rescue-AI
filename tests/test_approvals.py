@@ -88,3 +88,29 @@ def test_expired_approval_rejected():
     result = trip_tools.execute_rescue_plan(plan["plan_id"])
     assert result["ok"] is False
     assert result["error"] in ("NO_VALID_APPROVAL", "NOT_APPROVED")
+
+
+def test_atomic_claim_prevents_double_execute():
+    """Second execute after first claims should be idempotent, not double-run."""
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    first = trip_tools.execute_rescue_plan(plan["plan_id"])
+    assert first.get("status") == "succeeded"
+    second = trip_tools.execute_rescue_plan(plan["plan_id"])
+    assert second.get("idempotent") is True
+
+
+def test_recover_stuck_executing():
+    from server.store.database import db_session
+    from server.domain import execution_service
+
+    plan = trip_tools.propose_rescue_plan("FLIGHT-B")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE plans SET status = 'executing' WHERE id = ?",
+            (plan["plan_id"],),
+        )
+    result = execution_service.recover_stuck_execution(plan["plan_id"])
+    assert result["ok"] is True
+    assert result["status"] == "partially_failed"

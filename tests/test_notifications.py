@@ -77,3 +77,31 @@ def test_preference_memory():
     trip_tools.save_preference("seat", "window")
     after = trip_tools.get_preferences()
     assert after["seat"]["value"] == "window"
+
+
+def test_expired_notification_approval():
+    from datetime import datetime, timezone, timedelta
+    from server.store.database import db_session
+
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    ap = trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    assert ap["ok"]
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE notification_approvals SET expires_at = ? WHERE plan_id = ?",
+            (past, plan["plan_id"]),
+        )
+    sent = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert sent["ok"] is False
+    assert sent["error"] == "EXPIRED"
+
+
+def test_wrong_owner_cannot_send():
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    sent = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"], user_id="other-user")
+    assert sent["ok"] is False
+    assert sent["error"] in ("OWNERSHIP", "NOT_APPROVED", "NO_DRAFT")
