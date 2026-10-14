@@ -7,6 +7,7 @@ import {
   trip,
   type Alternative,
   type DemoStage,
+  type ToolEvent,
   type ToolTier,
 } from './data'
 import { mcp } from './services/mcpClient'
@@ -242,7 +243,7 @@ function App() {
       setBackendResult(result)
       if (result.status === 'succeeded') {
         setStage('recovered')
-        announce(`Backend confirmed success · plan ${plan.plan_id} · +₹${plan.total_cost_delta} (simulated providers)`)
+        announce(`Backend confirmed success · plan ${plan.plan_id} · +$${plan.total_cost_delta} (simulated providers)`)
         pushLog(`// status=succeeded steps=${(result.steps || []).length}`)
         try {
           pushLog(`draft_notifications({ plan_id: "${plan.plan_id}" })`)
@@ -370,47 +371,104 @@ function App() {
   }
 
   const activityEvents = useMemo(() => {
-    const events = [...toolEvents]
-    if (stage !== 'review') {
+    const events: ToolEvent[] = [
+      { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'SK 908 delay detected (illustrative mock scenario)' },
+      { id: 'impact', time: '14:32:09', tier: 'read', name: 'get_trip_impact', detail: 'Connection, hotel check-in, ride at risk' },
+      { id: 'rank', time: '14:32:11', tier: 'propose', name: 'rank_alternatives', detail: 'Scoring alternative flights against preferences' },
+      {
+        id: 'plan',
+        time: backendPlan ? 'active' : '14:32:13',
+        tier: 'propose',
+        name: 'build_rescue_plan',
+        detail: backendPlan
+          ? `Plan v${backendPlan.version || 1} · hash ${String(backendPlan.plan_hash || '').slice(0, 8)}… (server proposal)`
+          : 'Awaiting server plan proposal',
+      },
+      {
+        id: 'approval',
+        time: stage === 'review' ? 'waiting' : 'approved',
+        tier: 'commit',
+        name: 'approval_gate',
+        detail: stage === 'review'
+          ? 'Explicit traveller approval required'
+          : 'Approved by user-alex · hash verified',
+      },
+    ]
+
+    if (stage === 'executing') {
       events.push({
         id: 'execute',
-        time: stage === 'executing' ? 'running' : '14:32:16',
-        tier: 'commit' as ToolTier,
+        time: 'running',
+        tier: 'commit',
         name: 'execute_rescue_plan',
-        detail: stage === 'executing'
-          ? 'Transaction in progress'
-          : backendResult?.status === 'succeeded'
-          ? `Plan ${backendPlan?.plan_id || ''} committed · ${(backendResult?.steps || []).length} steps`
-          : `Execution failure recorded · ${backendResult?.status || 'rolled back'}`
+        detail: 'Transaction in progress on backend…',
       })
-    }
-    if (stage === 'partial_failure') {
-      const compCount = backendResult?.compensations?.length || 0
-      events.push({
-        id: 'compensate',
-        time: '14:32:18',
-        tier: 'commit' as ToolTier,
-        name: 'compensate_actions',
-        detail: `${compCount} step(s) rolled back safely`
+    } else if (backendResult?.steps) {
+      backendResult.steps.forEach((step: any, idx: number) => {
+        const isFailed = step.status === 'failed'
+        let detail = ''
+        if (step.type === 'change_flight') {
+          detail = isFailed
+            ? `Flight change failed: ${step.message || 'error'}`
+            : `${step.airline || 'Flight'} ${step.flight_number || ''} confirmed · Ref: ${step.booking_reference || 'MOCK-REF'}`
+        } else if (step.type === 'reschedule_hotel') {
+          detail = isFailed
+            ? `Hotel reschedule failed: ${step.message || 'error'}`
+            : `Hotel check-in updated · ${step.proposed_check_in || 'confirmed'}`
+        } else if (step.type === 'reschedule_ride') {
+          detail = isFailed
+            ? `Ride failed: ${step.message || 'Simulated provider failure'}`
+            : `Airport ride rescheduled · ${step.pickup_time || 'confirmed'}`
+        } else if (step.type === 'draft_notification') {
+          detail = `Notification draft prepared for ${step.recipient || 'contact'}`
+        } else {
+          detail = step.message || `Status: ${step.status}`
+        }
+        events.push({
+          id: `step-${idx}`,
+          time: `step ${step.step || idx + 1}`,
+          tier: 'commit',
+          name: step.type,
+          detail,
+        })
       })
+
+      if (backendResult.compensations?.length) {
+        backendResult.compensations.forEach((comp: any, idx: number) => {
+          events.push({
+            id: `comp-${idx}`,
+            time: 'rollback',
+            tier: 'commit',
+            name: `compensate_${comp.action}`,
+            detail: `Compensated ${comp.action} (${comp.status || 'success'})`,
+          })
+        })
+      }
     }
+
     if (notificationSent) {
       events.push({
         id: 'message-sent',
-        time: '14:32:20',
-        tier: 'commit' as ToolTier,
+        time: 'sent',
+        tier: 'commit',
         name: 'send_notifications',
-        detail: 'Notification delivered via simulated provider'
+        detail: 'Delivered via simulated provider (mock dispatch)',
       })
     }
     return events
   }, [stage, backendResult, backendPlan, notificationSent])
 
   const eventState = (eventId: string) => {
-    if (stage === 'review') return eventId === 'approval' ? 'waiting' : 'done'
-    if (stage === 'executing') return eventId === 'approval' || eventId === 'execute' ? (eventId === 'execute' ? 'running' : 'done') : 'done'
-    if (stage === 'recovered') return 'done'
-    if (eventId === 'message-sent') return 'warning'
+    if (eventId === 'approval') return stage === 'review' ? 'waiting' : 'done'
+    if (eventId === 'execute') return 'running'
+    if (eventId.startsWith('step-')) {
+      const idx = parseInt(eventId.replace('step-', ''), 10)
+      const step = backendResult?.steps?.[idx]
+      return step?.status === 'failed' ? 'warning' : 'done'
+    }
+    if (eventId.startsWith('comp-')) return 'warning'
+    if (eventId === 'message-sent') return 'done'
+    if (stage === 'review' && eventId === 'plan') return backendPlan ? 'done' : 'waiting'
     return 'done'
   }
 
@@ -486,7 +544,7 @@ function App() {
                 <div className="plan-item"><span className="plan-icon plan-icon--car"><Icon name="car" size={17} /></span><span className="plan-item-copy"><strong>Reschedule airport ride</strong><small>{trip.ride} · {stage === 'partial_failure' ? 'Simulated provider failure' : 'pickup updated to 11:35'}</small></span><span className={`plan-item-state${stage === 'partial_failure' ? ' plan-item-state--warning' : ''}`}>{stage === 'partial_failure' ? 'FAILED' : 'READY'}<small>{stage === 'partial_failure' ? 'Failure caught' : '+$18'}</small></span></div>
                 <div className="plan-item"><span className="plan-icon plan-icon--message"><Icon name="message" size={17} /></span><span className="plan-item-copy"><strong>{notificationSent ? 'Message sent to Sam' : 'Draft message to Sam'}</strong><small>“Landing at 11:05 now—ride is moved. See you soon.”</small></span><span className={`plan-item-state ${notificationSent ? 'plan-item-state--safe' : stage === 'partial_failure' ? 'plan-item-state--warning' : 'plan-item-state--safe'}`}>{notificationSent ? 'DELIVERED' : stage === 'partial_failure' ? 'NOT SENT' : 'DRAFT READY'}<small>{notificationSent ? 'Sent to Sam' : stage === 'partial_failure' ? 'Discarded' : 'Requires approval'}</small></span></div>
               </div>
-              <div className="plan-total"><span><span className="eyebrow">TOTAL COST CHANGE</span><strong>{backendPlan ? `+₹${backendPlan.total_cost_delta}` : '—'}</strong><small>{backendPlan ? `plan ${backendPlan.plan_id} · hash ${String(backendPlan.plan_hash).slice(0, 12)}… · simulated providers` : 'Cost appears after server proposes the plan'}</small></span><span className="plan-lock"><Icon name="lock" size={15} />Approval is bound to the exact server plan hash</span></div>
+              <div className="plan-total"><span><span className="eyebrow">TOTAL COST CHANGE</span><strong>{backendPlan ? `+$${backendPlan.total_cost_delta}` : '—'}</strong><small>{backendPlan ? `plan ${backendPlan.plan_id} · hash ${String(backendPlan.plan_hash).slice(0, 12)}… · simulated providers` : 'Cost appears after server proposes the plan'}</small></span><span className="plan-lock"><Icon name="lock" size={15} />Approval is bound to the exact server plan hash</span></div>
               <div className="plan-actions">
                 {backendError && <p className="plan-disclaimer" style={{color:'#b45041'}}><Icon name="close" size={15} />{backendError}</p>}
                 {backendResult && <p className="plan-disclaimer">Last execution: <strong>{backendResult.status}</strong>{backendResult.message ? ` — ${backendResult.message}` : ''} (providers: simulated)</p>}
