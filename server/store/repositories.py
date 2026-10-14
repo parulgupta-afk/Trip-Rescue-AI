@@ -19,18 +19,28 @@ def _id() -> str:
 
 # ---------- Seed / Fixtures ----------
 
-def seed_demo_data() -> None:
-    """Insert deterministic demo traveller, trip, segments, bookings, preferences."""
+def seed_demo_data(*, wipe: bool = False) -> None:
+    """Insert deterministic demo traveller, trip, segments, bookings, preferences.
+
+    wipe=True deletes existing rows (tests only). wipe=False only inserts
+    if the demo user is missing — never clears plans/preferences/history.
+    """
     with db_session() as conn:
-        # Clear for determinism in demo
-        for table in (
-            "audit_log", "execution_steps", "approvals", "plans",
-            "preferences", "bookings", "segments", "trips", "users"
-        ):
-            conn.execute(f"DELETE FROM {table}")
+        if wipe:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            for table in (
+                "notification_sends", "notification_approvals", "notification_drafts",
+                "audit_log", "execution_steps", "approvals", "plans",
+                "preferences", "bookings", "segments", "trips", "users"
+            ):
+                conn.execute(f"DELETE FROM {table}")
+            conn.execute("PRAGMA foreign_keys = ON")
 
         user_id = "user-alex"
         trip_id = "TRIP-100"
+        existing = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if existing and not wipe:
+            return
 
         conn.execute(
             "INSERT INTO users (id, name, timezone, created_at) VALUES (?, ?, ?, ?)",
@@ -211,3 +221,11 @@ def get_plan(plan_id: str) -> dict[str, Any] | None:
         d = dict(row)
         d["actions"] = json.loads(d["actions_json"])
         return d
+
+
+def delete_preference(user_id: str, key: str) -> None:
+    with db_session() as conn:
+        conn.execute(
+            "DELETE FROM preferences WHERE user_id = ? AND key = ?",
+            (user_id, key),
+        )

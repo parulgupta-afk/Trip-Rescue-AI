@@ -1,4 +1,5 @@
 """Safety tests for approval + execution (Phase 4)."""
+from server.store.bootstrap import ensure_schema
 from server.store.database import init_db
 from server.store import repositories as repo
 from server.tools import trip_tools
@@ -6,8 +7,8 @@ from server.domain import execution_service
 
 
 def setup_function():
-    init_db()
-    repo.seed_demo_data()
+    ensure_schema()
+    repo.seed_demo_data(wipe=True)
     execution_service.set_force_fail(None)
 
 

@@ -90,3 +90,35 @@ CREATE TABLE IF NOT EXISTS audit_log (
     outcome TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notification_drafts (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL REFERENCES plans(id),
+    user_id TEXT NOT NULL,
+    drafts_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_approvals (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL REFERENCES plans(id),
+    draft_id TEXT NOT NULL REFERENCES notification_drafts(id),
+    content_hash TEXT NOT NULL,
+    approved_by TEXT NOT NULL,
+    approved_at TEXT NOT NULL,
+    expires_at TEXT,
+    consumed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notification_sends (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    draft_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(plan_id, content_hash)
+);

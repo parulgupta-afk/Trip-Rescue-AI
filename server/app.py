@@ -1,13 +1,7 @@
-"""
-Trip Rescue AI – MCP Server entrypoint (MCP 2.x compatible).
-
-Uses MCPServer (FastMCP was renamed in mcp>=2).
-Tools call the same domain functions as the HTTP facade.
-"""
+"""Trip Rescue AI – MCP Server (MCP 2.x MCPServer)."""
 from __future__ import annotations
 
 from mcp.server.mcpserver import MCPServer
-
 from server.tools import trip_tools
 
 mcp = MCPServer(
@@ -16,7 +10,7 @@ mcp = MCPServer(
         "Trip Rescue AI coordinates recovery of disrupted trips. "
         "Always retrieve trip and status first, search alternatives, "
         "propose a complete plan, and NEVER execute without explicit approval. "
-        "Notifications also require a separate send approval."
+        "Notifications require hash-bound approve_notifications before send."
     ),
 )
 
@@ -29,25 +23,25 @@ def get_trip(trip_id: str = "TRIP-100") -> dict:
 
 @mcp.tool()
 def check_flight_status(trip_id: str = "TRIP-100") -> dict:
-    """Check flight status and identify which parts of the itinerary are affected by a delay."""
+    """Check flight status and identify affected itinerary items."""
     return trip_tools.check_flight_status(trip_id)
 
 
 @mcp.tool()
 def get_preferences(user_id: str = "user-alex") -> dict:
-    """Retrieve the traveller's saved preferences (airline, seat, budget, overnight avoidance)."""
+    """Retrieve saved travel preferences."""
     return trip_tools.get_preferences(user_id)
 
 
 @mcp.tool()
 def list_preferences(user_id: str = "user-alex") -> dict:
-    """List all saved preferences for memory demonstration."""
+    """List all saved preferences."""
     return trip_tools.list_preferences(user_id)
 
 
 @mcp.tool()
 def search_alternatives(trip_id: str = "TRIP-100", user_id: str = "user-alex") -> dict:
-    """Search and rank alternative flights against the traveller's preferences."""
+    """Search and rank alternative flights against preferences."""
     return trip_tools.search_alternatives(trip_id, user_id)
 
 
@@ -57,19 +51,25 @@ def propose_rescue_plan(
     trip_id: str = "TRIP-100",
     user_id: str = "user-alex",
 ) -> dict:
-    """Build a complete multi-service rescue plan. Does NOT execute any changes."""
+    """Build a multi-service rescue plan. Does NOT execute. Rejects over-budget plans."""
     return trip_tools.propose_rescue_plan(selected_flight_id, trip_id, user_id)
 
 
 @mcp.tool()
 def save_preference(key: str, value: str | int | bool, user_id: str = "user-alex") -> dict:
-    """Save a travel preference explicitly stated or confirmed by the user."""
+    """Save a travel preference."""
     return trip_tools.save_preference(key, value, user_id)
 
 
 @mcp.tool()
+def delete_preference(key: str, user_id: str = "user-alex") -> dict:
+    """Delete a saved preference."""
+    return trip_tools.delete_preference(key, user_id)
+
+
+@mcp.tool()
 def approve_rescue_plan(plan_id: str, plan_hash: str, user_id: str = "user-alex") -> dict:
-    """Record explicit approval of the exact plan (hash-bound)."""
+    """Record hash-bound approval of the exact plan."""
     return trip_tools.approve_rescue_plan(plan_id, plan_hash, user_id)
 
 
@@ -85,26 +85,31 @@ def execute_rescue_plan(
 
 @mcp.tool()
 def get_plan_status(plan_id: str) -> dict:
-    """Retrieve execution progress and results for a plan."""
+    """Retrieve execution progress and results."""
     return trip_tools.get_plan_status(plan_id)
 
 
 @mcp.tool()
 def draft_notifications(plan_id: str, user_id: str = "user-alex") -> dict:
-    """Draft notification messages for review. Does not send."""
+    """Draft and persist notification messages with content hash."""
     return trip_tools.draft_notifications(plan_id, user_id)
+
+
+@mcp.tool()
+def approve_notifications(plan_id: str, draft_hash: str, user_id: str = "user-alex") -> dict:
+    """Approve exact notification draft (hash-bound)."""
+    return trip_tools.approve_notifications(plan_id, draft_hash, user_id)
 
 
 @mcp.tool()
 def send_notifications(
     plan_id: str,
-    approved: bool = False,
+    draft_hash: str | None = None,
     user_id: str = "user-alex",
 ) -> dict:
-    """Send reviewed notifications. Requires approved=True."""
-    return trip_tools.send_notifications(plan_id, approved, user_id)
+    """Send notifications only with valid hash-bound approval."""
+    return trip_tools.send_notifications(plan_id, draft_hash, user_id)
 
 
 if __name__ == "__main__":
-    # Streamable HTTP transport (MCP 2.x)
     mcp.run(transport="streamable-http")

@@ -94,6 +94,18 @@ def propose_rescue_plan(
     })
 
     total_cost = sum(a.get("cost_delta", 0) for a in actions)
+
+    max_cost = preferences.get("max_additional_cost", {}).get("value", 3000)
+    try:
+        max_cost = int(max_cost)
+    except (TypeError, ValueError):
+        max_cost = 3000
+    if total_cost > max_cost:
+        raise ValueError(
+            f"Plan cost +{total_cost} exceeds max additional cost {max_cost}. "
+            "Choose a lower-cost alternative or raise your budget preference."
+        )
+
     plan_hash = compute_plan_hash(actions, total_cost, trip_id)
 
     plan = repo.create_plan(

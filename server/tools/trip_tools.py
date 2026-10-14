@@ -1,4 +1,7 @@
-"""MCP tools – Tier A read operations + plan proposal."""
+"""MCP tools – read / propose / commit operations.
+
+Schema is ensured on first use. Demo data is NOT wiped on import.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,16 +9,23 @@ from typing import Any
 from server.providers import flight_provider
 from server.store import repositories as repo
 from server.domain.plan_engine import propose_rescue_plan as engine_propose
-from server.store.database import init_db
+from server.store.bootstrap import ensure_schema, ensure_demo_fixtures
+
+_initialized = False
 
 
-# Ensure DB + seed on import for demo
-init_db()
-repo.seed_demo_data()
+def _ensure_ready() -> None:
+    global _initialized
+    if _initialized:
+        return
+    ensure_schema()
+    ensure_demo_fixtures(force=False)
+    _initialized = True
 
 
 def get_trip(trip_id: str = "TRIP-100") -> dict[str, Any]:
     """Retrieve the full itinerary (segments + bookings)."""
+    _ensure_ready()
     trip = repo.get_trip(trip_id)
     if not trip:
         return {"error": f"Trip {trip_id} not found"}
@@ -24,6 +34,7 @@ def get_trip(trip_id: str = "TRIP-100") -> dict[str, Any]:
 
 def check_flight_status(trip_id: str = "TRIP-100") -> dict[str, Any]:
     """Detect disruption and list affected itinerary items."""
+    _ensure_ready()
     trip = repo.get_trip(trip_id)
     if not trip:
         return {"error": f"Trip {trip_id} not found"}
@@ -32,6 +43,7 @@ def check_flight_status(trip_id: str = "TRIP-100") -> dict[str, Any]:
 
 def get_preferences(user_id: str = "user-alex") -> dict[str, Any]:
     """Return saved travel preferences."""
+    _ensure_ready()
     return repo.get_preferences(user_id)
 
 
@@ -40,12 +52,13 @@ def search_alternatives(
     user_id: str = "user-alex",
 ) -> dict[str, Any]:
     """Search and rank alternative flights against preferences."""
+    _ensure_ready()
     trip = repo.get_trip(trip_id)
     if not trip:
         return {"error": f"Trip {trip_id} not found"}
     prefs = repo.get_preferences(user_id)
     ranked = flight_provider.search_alternatives(trip, prefs)
-    return {"alternatives": ranked, "count": len(ranked)}
+    return {"alternatives": ranked, "count": len(ranked), "provider": "simulated"}
 
 
 def propose_rescue_plan(
@@ -56,12 +69,14 @@ def propose_rescue_plan(
     """
     Generate a coordinated recovery plan for the selected flight.
     Does NOT execute anything – returns a plan awaiting approval.
+    Rejects over-budget selections unless within max_additional_cost.
     """
+    _ensure_ready()
     try:
         plan = engine_propose(trip_id, user_id, selected_flight_id)
         return plan
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "ok": False}
 
 
 def save_preference(
@@ -71,13 +86,19 @@ def save_preference(
     source: str = "explicit",
 ) -> dict[str, Any]:
     """Persist a user preference."""
+    _ensure_ready()
     repo.save_preference(user_id, key, value, source)
     return {"status": "saved", "key": key, "value": value}
 
 
-# ---------- Phase 4: Approval + Execution ----------
+def delete_preference(key: str, user_id: str = "user-alex") -> dict[str, Any]:
+    """Delete a saved preference."""
+    _ensure_ready()
+    repo.delete_preference(user_id, key)
+    return {"status": "deleted", "key": key}
 
-from server.domain import approval_service, execution_service
+
+from server.domain import approval_service, execution_service, notification_service
 
 
 def approve_rescue_plan(
@@ -86,6 +107,7 @@ def approve_rescue_plan(
     user_id: str = "user-alex",
 ) -> dict:
     """Record explicit approval of the exact plan (hash-bound)."""
+    _ensure_ready()
     return approval_service.approve_plan(plan_id, plan_hash, user_id)
 
 
@@ -94,10 +116,8 @@ def execute_rescue_plan(
     user_id: str = "user-alex",
     force_fail_step: str | None = None,
 ) -> dict:
-    """
-    Execute an approved plan.
-    Optionally force a failure on a named step for demo (e.g. 'reschedule_ride').
-    """
+    """Execute an approved plan. Optional force_fail_step for compensation demo."""
+    _ensure_ready()
     if force_fail_step:
         execution_service.set_force_fail(force_fail_step)
     else:
@@ -107,29 +127,42 @@ def execute_rescue_plan(
 
 def get_plan_status(plan_id: str) -> dict:
     """Return plan status and execution step results."""
+    _ensure_ready()
     return execution_service.get_plan_status(plan_id)
 
 
-# ---------- Phase 5: Notifications ----------
-
-from server.domain import notification_service
-
-
 def draft_notifications(plan_id: str, user_id: str = "user-alex") -> dict:
-    """Draft notification messages for review. Does not send."""
+    """Draft notification messages for review. Persists drafts with content hash."""
+    _ensure_ready()
     return notification_service.draft_notifications(plan_id, user_id)
+
+
+def approve_notifications(
+    plan_id: str,
+    draft_hash: str,
+    user_id: str = "user-alex",
+) -> dict:
+    """Approve exact notification draft content (hash-bound)."""
+    _ensure_ready()
+    return notification_service.approve_notifications(plan_id, draft_hash, user_id)
 
 
 def send_notifications(
     plan_id: str,
-    approved: bool = False,
+    draft_hash: str | None = None,
     user_id: str = "user-alex",
+    approved: bool | None = None,  # deprecated — ignored for authorization
 ) -> dict:
-    """Send reviewed notifications. Requires approved=True."""
-    return notification_service.send_notifications(plan_id, approved, user_id)
+    """
+    Send reviewed notifications.
+    Requires a valid hash-bound notification approval — NOT a client boolean.
+    """
+    _ensure_ready()
+    return notification_service.send_notifications(plan_id, draft_hash, user_id)
 
 
 def list_preferences(user_id: str = "user-alex") -> dict:
-    """List all saved preferences for the user (memory demo)."""
+    """List all saved preferences for memory demonstration."""
+    _ensure_ready()
     prefs = get_preferences(user_id)
     return {"user_id": user_id, "preferences": prefs, "count": len(prefs)}

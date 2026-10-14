@@ -1,12 +1,13 @@
 """Basic tool tests – run with pytest."""
 from server.tools import trip_tools
+from server.store.bootstrap import ensure_schema
 from server.store.database import init_db
 from server.store import repositories as repo
 
 
 def setup_module():
-    init_db()
-    repo.seed_demo_data()
+    ensure_schema()
+    repo.seed_demo_data(wipe=True)
 
 
 def test_get_trip():

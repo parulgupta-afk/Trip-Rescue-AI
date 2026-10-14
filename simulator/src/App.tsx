@@ -192,16 +192,10 @@ function App() {
           : `Partial failure · plan ${plan.plan_id} · compensations applied where possible.`,
       )
     } catch (err: any) {
-      // Backend offline → keep polished timed demo so judges still see UX
-      announce(`Live server unavailable (${err?.message || 'error'}). Running visual demo path.`)
-      window.setTimeout(() => {
-        setStage(outcome)
-        announce(
-          outcome === 'recovered'
-            ? 'Recovery complete. All reversible steps reconciled.'
-            : 'Partial failure captured. The delivered message cannot be undone.',
-        )
-      }, 1800)
+      // Never claim success without backend confirmation
+      setStage('review')
+      const msg = err?.message || String(err) || 'Unknown backend error'
+      announce(`Recovery failed: ${msg}. No changes were applied.`)
     }
   }
 

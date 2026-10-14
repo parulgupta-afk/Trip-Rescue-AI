@@ -27,7 +27,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["server*", "agent*"]
+include = ["server*"]
 
 [tool.ruff]
 line-length = 100
@@ -35,5 +35,4 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["."]
 testpaths = ["tests"]

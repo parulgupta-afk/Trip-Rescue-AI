@@ -7,7 +7,7 @@ Alexa+ Hackathon project — an AI agent that recovers disrupted trips across fl
 ## Status: MVP Complete (Phases 0–9)
 
 | Phase | Status | Summary |
-| --- | --- | --- |
+|-------|--------|---------|
 | 0 Scaffold | ✅ | Repo, docs, friction-log |
 | 1 MCP foundation | ✅ | MCPServer (mcp 2.x), Streamable HTTP path, tools |
 | 2 Data + mocks | ✅ | SQLite, 4h-delay scenario, providers |
@@ -28,6 +28,12 @@ It calls the same domain tools registered on the MCP server via an HTTP facade.
 - **Not claimed:** live Alexa device skill, official Alexa+ host runtime, real airline APIs
 
 Judges should evaluate agent tool use, approval safety, and failure handling in the simulator.
+
+## Data safety
+
+- Schema init does **not** wipe data.
+- Demo seed only inserts if missing; tests use explicit `wipe=True`.
+- UI never claims success when the backend fails.
 
 ## Provider honesty
 
@@ -63,7 +69,7 @@ npm install
 npm run dev
 ```
 
-Open **<http://localhost:5173>**
+Open **http://localhost:5173**
 
 ## Full demo journey
 
@@ -82,7 +88,7 @@ Open **<http://localhost:5173>**
 - Stale / modified / expired approvals rejected  
 - Idempotent execution  
 - Compensating actions on partial failure  
-- Notifications require their own approval  
+- Notifications require hash-bound approval (not a client boolean)  
 - Server (not LLM) enforces authorization  
 
 ## Tools (MCP)

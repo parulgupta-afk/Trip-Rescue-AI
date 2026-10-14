@@ -32,9 +32,11 @@ class DemoOrchestrator:
         step("approve_rescue_plan", self.tools.approve_rescue_plan,
              plan_id=plan["plan_id"], plan_hash=plan["plan_hash"])
         step("execute_rescue_plan", self.tools.execute_rescue_plan, plan_id=plan["plan_id"])
-        step("draft_notifications", self.tools.draft_notifications, plan_id=plan["plan_id"])
+        draft = step("draft_notifications", self.tools.draft_notifications, plan_id=plan["plan_id"])
+        step("approve_notifications", self.tools.approve_notifications,
+             plan_id=plan["plan_id"], draft_hash=draft["content_hash"])
         step("send_notifications", self.tools.send_notifications,
-             plan_id=plan["plan_id"], approved=True)
+             plan_id=plan["plan_id"], draft_hash=draft["content_hash"])
         step("list_preferences", self.tools.list_preferences)
         return log
 
