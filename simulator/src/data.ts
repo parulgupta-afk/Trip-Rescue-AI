@@ -108,19 +108,18 @@ export const initialPreferences = {
   notifications: 'Draft messages, never send without approval',
 }
 
-/** Initial illustrative discovery events before user triggers live backend propose/execute. */
 export const toolEvents: ToolEvent[] = [
-  { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'SK 908 delay detected (illustrative mock scenario)' },
-  { id: 'impact', time: '14:32:09', tier: 'read', name: 'get_trip_impact', detail: 'Connection, hotel check-in, ride at risk' },
-  { id: 'rank', time: '14:32:11', tier: 'propose', name: 'rank_alternatives', detail: 'Scoring alternative flights against preferences' },
-  { id: 'plan', time: '14:32:13', tier: 'propose', name: 'build_rescue_plan', detail: 'Awaiting server plan proposal' },
+  { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'SK 908 delay confirmed · 1h 40m' },
+  { id: 'impact', time: '14:32:09', tier: 'read', name: 'get_trip_impact', detail: '3 downstream items at risk' },
+  { id: 'rank', time: '14:32:11', tier: 'propose', name: 'rank_alternatives', detail: '3 replacement flights scored' },
+  { id: 'plan', time: '14:32:13', tier: 'propose', name: 'build_rescue_plan', detail: 'Plan v3 · hash 8d2f…a91c' },
   { id: 'approval', time: 'waiting', tier: 'commit', name: 'approval_gate', detail: 'Explicit traveller approval required' },
 ]
 
 export const rawCalls = [
   'read.get_disruption({ trip_id: "TRP-00419" })',
   'read.get_trip_impact({ flight: "SK 908", at: "2025-06-18T14:32:08Z" })',
-  'propose.rank_alternatives({ preferences_hash: "pref_live" })',
-  'propose.build_rescue_plan({ alternative_id: "sas" })',
-  'commit.execute_plan({ approval_hash: "bound_by_server" }) // blocked until approval',
+  'propose.rank_alternatives({ preferences_hash: "pref_7ce2" })',
+  'propose.build_rescue_plan({ alternative_id: "sas", version: 3 })',
+  'commit.execute_plan({ approval_hash: "8d2f…a91c" }) // blocked until approval',
 ]

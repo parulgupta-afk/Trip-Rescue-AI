@@ -18,7 +18,7 @@ jobs:
         run: |
           python -c "from server.http_facade import app; from server.app import mcp; print(app.title, mcp.name)"
       - name: MCP registration smoke
-        run: PYTHONPATH=. python scripts/mcp_smoke.py
+        run: PYTHONPATH=. python scripts/mcp_smoke.py --network
   frontend:
     runs-on: ubuntu-latest
     defaults:

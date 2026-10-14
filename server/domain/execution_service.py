@@ -292,15 +292,8 @@ def get_plan_status(plan_id: str) -> dict[str, Any]:
 
 def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
     """
-    Mark a plan stuck in 'executing' as partially_failed.
-
-    Recovery design:
-    - Reads persisted execution_steps to identify actions that DID complete.
-    - Actions with no recorded step are marked 'interrupted' (unknown outcome).
-    - Does NOT call providers or assume any action succeeded without a DB record.
-    - Does NOT retry any action — the caller must re-propose if a new plan is
-      required, since partial provider state (e.g. hotel already rescheduled)
-      means re-execution would be incorrect without manual reconciliation.
+    Mark a plan stuck in 'executing' as partially_failed when no terminal outcome exists.
+    Does not invent successful provider results.
     """
     plan = repo.get_plan(plan_id)
     if not plan:
@@ -314,36 +307,7 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
             "status": plan["status"],
             "message": "Plan is not stuck in executing.",
         }
-
-    persisted_steps = _get_steps(plan_id)
-    completed_types = {s["action_type"] for s in persisted_steps}
-    actions = plan.get("actions", [])
-
-    step_outcomes: list[dict] = []
-    for i, action in enumerate(actions):
-        atype = action["type"]
-        if atype in completed_types:
-            # Find the most recent record for this action type
-            matching = [s for s in persisted_steps if s["action_type"] == atype]
-            last = matching[-1]
-            step_outcomes.append({
-                "step": i + 1,
-                "type": atype,
-                "status": last["status"],
-                "message": f"Recorded outcome: {last['status']}",
-                "result": last.get("result"),
-            })
-        else:
-            step_outcomes.append({
-                "step": i + 1,
-                "type": atype,
-                "status": "interrupted",
-                "message": (
-                    "No execution record found. Action may not have started, or the "
-                    "process crashed before recording. Do NOT assume this step completed."
-                ),
-            })
-
+    steps = _get_steps(plan_id)
     with db_session() as conn:
         conn.execute(
             "UPDATE plans SET status = 'partially_failed' WHERE id = ? AND status = 'executing'",
@@ -353,12 +317,10 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
         "ok": True,
         "plan_id": plan_id,
         "status": "partially_failed",
-        "steps": step_outcomes,
+        "steps": steps,
         "message": (
-            "Plan was left in 'executing' (e.g. process crash). "
-            "Marked partially_failed. Steps with status='interrupted' have unknown provider outcome "
-            "— manual reconciliation required before re-proposing."
+            "Plan was left in executing (e.g. process crash). "
+            "Marked partially_failed. Review steps; do not assume providers completed."
         ),
         "provider": "simulated",
     }
-
