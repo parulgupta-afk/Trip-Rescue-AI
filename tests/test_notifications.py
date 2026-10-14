@@ -147,3 +147,80 @@ def test_already_sent_draft_cannot_be_reapproved():
     re_ap = trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
     assert re_ap["ok"] is False
     assert re_ap["error"] == "ALREADY_SENT"
+
+
+def test_concurrent_send_dispatches_provider_once():
+    """Only one of two competing senders may call the mock provider."""
+    import threading
+    import time
+    from server.providers import message_provider
+
+    message_provider.reset_send_hooks()
+    # Slow the winner inside provider so the loser competes on the claim
+    message_provider.set_before_send(lambda: time.sleep(0.15))
+
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    assert draft.get("ok") is True
+    ap = trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    assert ap["ok"] is True
+
+    results: list[dict] = []
+    lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            r = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+            with lock:
+                results.append(r)
+        except BaseException as e:
+            with lock:
+                errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert not errors, f"workers raised: {errors}"
+    assert len(results) == 2, f"results={results}"
+
+    count = message_provider.get_send_count()
+    message_provider.reset_send_hooks()
+    assert count == 1, (
+        f"provider invoked {count} times; expected 1; results={results}"
+    )
+
+    independent_full = [
+        r for r in results
+        if r.get("ok") is True and r.get("status") == "sent" and not r.get("idempotent")
+    ]
+    assert len(independent_full) == 1, f"expected one non-idempotent success, got {results}"
+
+
+def test_uncertain_send_not_retried():
+    """If a send is left uncertain, a later call must not re-dispatch the provider."""
+    from server.store.database import db_session
+    from server.providers import message_provider
+
+    message_provider.reset_send_hooks()
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+
+    # Simulate interrupted send record
+    with db_session() as conn:
+        conn.execute(
+            """INSERT INTO notification_sends
+               (id, plan_id, draft_id, content_hash, result_json, status, created_at)
+               VALUES ('send-unc-1', ?, ?, ?, '[]', 'uncertain', datetime('now'))""",
+            (plan["plan_id"], draft["draft_id"], draft["content_hash"]),
+        )
+
+    before = message_provider.get_send_count()
+    result = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert result["ok"] is False
+    assert result["error"] == "SEND_UNCERTAIN"
+    assert message_provider.get_send_count() == before

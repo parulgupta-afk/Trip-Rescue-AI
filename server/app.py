@@ -111,5 +111,13 @@ def send_notifications(
     return trip_tools.send_notifications(plan_id, draft_hash, user_id)
 
 
+
+
+@mcp.tool()
+def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict:
+    """Recover a plan stuck in executing after interruption. Does not retry providers."""
+    return trip_tools.recover_stuck_execution(plan_id, user_id)
+
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")

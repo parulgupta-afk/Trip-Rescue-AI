@@ -292,35 +292,93 @@ def get_plan_status(plan_id: str) -> dict[str, Any]:
 
 def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
     """
-    Mark a plan stuck in 'executing' as partially_failed when no terminal outcome exists.
-    Does not invent successful provider results.
+    Recover a plan stuck in 'executing' after interruption.
+
+    - Ownership and status validated.
+    - Atomic transition: only succeeds if status is still 'executing'.
+    - Each planned action is identified by step_number (1-based index).
+    - Steps with no terminal record are marked 'interrupted' (unknown outcome).
+    - Never invents success or retries providers.
     """
     plan = repo.get_plan(plan_id)
     if not plan:
-        return {"ok": False, "error": "PLAN_NOT_FOUND"}
+        return {"ok": False, "error": "PLAN_NOT_FOUND", "message": f"Plan {plan_id} not found"}
     if plan["user_id"] != user_id:
-        return {"ok": False, "error": "OWNERSHIP"}
+        return {"ok": False, "error": "OWNERSHIP", "message": "Plan does not belong to this user"}
     if plan["status"] != "executing":
         return {
             "ok": True,
+            "idempotent": True,
             "plan_id": plan_id,
             "status": plan["status"],
-            "message": "Plan is not stuck in executing.",
+            "steps": _get_steps(plan_id),
+            "message": f"Plan is not stuck in executing (status={plan['status']}).",
         }
-    steps = _get_steps(plan_id)
+
+    actions = plan.get("actions") or []
+    existing = _get_steps(plan_id)
+    # Map step_number -> last record
+    by_num: dict[int, dict] = {}
+    for s in existing:
+        by_num[int(s["step_number"])] = s
+
+    interrupted: list[dict] = []
+    for i, action in enumerate(actions):
+        step_number = i + 1
+        action_type = action.get("type", "unknown")
+        step_key = f"{plan_id}:step:{step_number}:{action_type}"
+        rec = by_num.get(step_number)
+        if rec is None:
+            result = {
+                "status": "interrupted",
+                "step_id": step_key,
+                "message": "No terminal provider result recorded before interruption.",
+            }
+            _record_step(
+                plan_id, step_number, action_type, "interrupted", result, "INTERRUPTED", _now_iso()
+            )
+            interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
+        elif rec.get("status") in ("pending", "running", "executing"):
+            result = {
+                "status": "interrupted",
+                "step_id": step_key,
+                "prior_status": rec.get("status"),
+                "message": "Step had non-terminal status at recovery time.",
+            }
+            _record_step(
+                plan_id, step_number, action_type, "interrupted", result, "INTERRUPTED", _now_iso()
+            )
+            interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
+
     with db_session() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE plans SET status = 'partially_failed' WHERE id = ? AND status = 'executing'",
             (plan_id,),
         )
+        claimed = cur.rowcount == 1
+
+    if not claimed:
+        current = repo.get_plan(plan_id)
+        return {
+            "ok": True,
+            "idempotent": True,
+            "plan_id": plan_id,
+            "status": (current or {}).get("status"),
+            "steps": _get_steps(plan_id),
+            "message": "Concurrent status change: plan is no longer executing.",
+        }
+
+    steps = _get_steps(plan_id)
     return {
         "ok": True,
         "plan_id": plan_id,
         "status": "partially_failed",
+        "interrupted_steps": interrupted,
         "steps": steps,
         "message": (
-            "Plan was left in executing (e.g. process crash). "
-            "Marked partially_failed. Review steps; do not assume providers completed."
+            "Plan left in executing was marked partially_failed. "
+            f"{len(interrupted)} step(s) recorded as interrupted (unknown outcome). "
+            "Providers were not retried; do not assume success."
         ),
         "provider": "simulated",
     }

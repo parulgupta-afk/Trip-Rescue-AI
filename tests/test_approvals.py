@@ -132,3 +132,51 @@ def test_ownership_check_on_execute_rejected():
     assert bad["ok"] is False
     assert bad["error"] == "OWNERSHIP"
 
+
+
+def test_recover_missing_plan():
+    from server.domain import execution_service
+    r = execution_service.recover_stuck_execution("NO-SUCH-PLAN")
+    assert r["ok"] is False
+    assert r["error"] == "PLAN_NOT_FOUND"
+
+
+def test_recover_wrong_owner():
+    from server.store.database import db_session
+    from server.domain import execution_service
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    with db_session() as conn:
+        conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
+    r = execution_service.recover_stuck_execution(plan["plan_id"], user_id="other-user")
+    assert r["ok"] is False
+    assert r["error"] == "OWNERSHIP"
+
+
+def test_recover_marks_missing_steps_interrupted():
+    from server.store.database import db_session
+    from server.domain import execution_service
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    with db_session() as conn:
+        conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
+    r = execution_service.recover_stuck_execution(plan["plan_id"])
+    assert r["ok"] is True
+    assert r["status"] == "partially_failed"
+    assert len(r.get("interrupted_steps") or []) >= 1
+    statuses = {s["status"] for s in r["steps"]}
+    assert "interrupted" in statuses
+    # repeated recovery is idempotent
+    r2 = execution_service.recover_stuck_execution(plan["plan_id"])
+    assert r2.get("idempotent") is True or r2["status"] == "partially_failed"
+
+
+def test_recover_via_tool_surface():
+    from server.store.database import db_session
+    plan = trip_tools.propose_rescue_plan("FLIGHT-B")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    with db_session() as conn:
+        conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
+    r = trip_tools.recover_stuck_execution(plan["plan_id"])
+    assert r["ok"] is True
+    assert r["status"] == "partially_failed"

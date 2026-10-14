@@ -167,3 +167,9 @@ def list_preferences(user_id: str = "user-alex") -> dict:
     _ensure_ready()
     prefs = get_preferences(user_id)
     return {"user_id": user_id, "preferences": prefs, "count": len(prefs)}
+
+
+def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict:
+    """Mark an interrupted 'executing' plan as partially_failed; never invents success."""
+    _ensure_ready()
+    return execution_service.recover_stuck_execution(plan_id, user_id)

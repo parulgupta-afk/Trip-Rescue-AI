@@ -108,6 +108,7 @@ export const initialPreferences = {
   notifications: 'Draft messages, never send without approval',
 }
 
+/** ILLUSTRATIVE design timeline only — not confirmed backend events. */
 export const toolEvents: ToolEvent[] = [
   { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'SK 908 delay confirmed · 1h 40m' },
   { id: 'impact', time: '14:32:09', tier: 'read', name: 'get_trip_impact', detail: '3 downstream items at risk' },

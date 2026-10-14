@@ -1,13 +1,14 @@
-"""Notification drafting + hash-bound send approval."""
+"""Notification drafting + hash-bound send approval with atomic send claim."""
 from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from server.store.database import db_session
+from server.store.database import db_session, get_connection
 from server.store import repositories as repo
 from server.providers import message_provider
 
@@ -94,7 +95,10 @@ def approve_notifications(
         return {
             "ok": False,
             "error": "INVALID_PLAN_STATUS",
-            "message": f"Cannot approve notifications for plan with status '{plan['status']}'. Plan must be approved or executed first.",
+            "message": (
+                f"Cannot approve notifications for plan with status '{plan['status']}'. "
+                "Plan must be approved or executed first."
+            ),
         }
 
     with db_session() as conn:
@@ -107,7 +111,7 @@ def approve_notifications(
         if not row:
             return {"ok": False, "error": "NO_DRAFT", "message": "No notification draft found"}
         draft = dict(row)
-        if draft["status"] == "sent":
+        if draft.get("status") == "sent":
             return {"ok": False, "error": "ALREADY_SENT", "message": "Notification draft has already been sent."}
         if draft["content_hash"] != draft_hash:
             return {
@@ -139,12 +143,69 @@ def approve_notifications(
     }
 
 
+def _response_for_existing_send(plan_id: str, es: dict) -> dict[str, Any]:
+    status = es.get("status") or "unknown"
+    try:
+        payload = json.loads(es.get("result_json") or "[]")
+    except json.JSONDecodeError:
+        payload = []
+
+    if status == "sent":
+        return {
+            "ok": True,
+            "idempotent": True,
+            "plan_id": plan_id,
+            "status": "sent",
+            "sent": payload,
+            "message": "Notifications already sent for this draft (idempotent).",
+            "provider": "simulated",
+        }
+    if status == "sending":
+        return {
+            "ok": False,
+            "error": "SEND_IN_PROGRESS",
+            "plan_id": plan_id,
+            "status": "sending",
+            "message": (
+                "A send reservation is already in progress for this draft. "
+                "Provider was not invoked again. Wait or inspect status; do not assume delivery."
+            ),
+            "provider": "simulated",
+        }
+    if status == "uncertain":
+        return {
+            "ok": False,
+            "error": "SEND_UNCERTAIN",
+            "plan_id": plan_id,
+            "status": "uncertain",
+            "sent": payload,
+            "message": (
+                "A previous send attempt left an uncertain outcome. "
+                "Provider was not re-dispatched. Manual reconciliation required."
+            ),
+            "provider": "simulated",
+        }
+    return {
+        "ok": False,
+        "error": "SEND_STATE",
+        "plan_id": plan_id,
+        "status": status,
+        "message": f"Existing send record has status '{status}'. Provider not invoked.",
+        "provider": "simulated",
+    }
+
+
 def send_notifications(
     plan_id: str,
     draft_hash: str | None = None,
     user_id: str = "user-alex",
 ) -> dict[str, Any]:
-    """Send only with valid unexpired unconsumed hash-bound approval."""
+    """
+    Send only with valid unexpired unconsumed hash-bound approval.
+
+    Concurrency: only one caller may INSERT a (plan_id, content_hash) reservation
+    with status 'sending'. Only that caller may dispatch the mock provider.
+    """
     plan = repo.get_plan(plan_id)
     if not plan:
         return {"ok": False, "error": "PLAN_NOT_FOUND", "message": f"Plan {plan_id} not found"}
@@ -162,10 +223,16 @@ def send_notifications(
         return {
             "ok": False,
             "error": "INVALID_PLAN_STATUS",
-            "message": f"Cannot send notifications for plan with status '{plan['status']}'. Plan must be approved or executed first.",
+            "message": (
+                f"Cannot send notifications for plan with status '{plan['status']}'. "
+                "Plan must be approved or executed first."
+            ),
         }
 
-    with db_session() as conn:
+    # --- Phase 1: validate + atomic reservation (BEGIN IMMEDIATE) ---
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         draft_row = conn.execute(
             """SELECT * FROM notification_drafts
                WHERE plan_id = ? AND user_id = ?
@@ -173,10 +240,12 @@ def send_notifications(
             (plan_id, user_id),
         ).fetchone()
         if not draft_row:
+            conn.rollback()
             return {"ok": False, "error": "NO_DRAFT", "message": "No notification draft found"}
         draft = dict(draft_row)
 
         if draft["content_hash"] != draft_hash:
+            conn.rollback()
             return {
                 "ok": False,
                 "error": "HASH_MISMATCH",
@@ -184,72 +253,129 @@ def send_notifications(
             }
         content_hash = draft_hash
 
-        # Idempotency: already sent this content
         existing_send = conn.execute(
             "SELECT * FROM notification_sends WHERE plan_id = ? AND content_hash = ?",
             (plan_id, content_hash),
         ).fetchone()
         if existing_send:
-            es = dict(existing_send)
-            return {
-                "ok": True,
-                "idempotent": True,
-                "plan_id": plan_id,
-                "status": es["status"],
-                "sent": json.loads(es["result_json"]),
-                "message": "Notifications already sent for this draft (idempotent).",
-                "provider": "simulated",
-            }
+            conn.rollback()
+            return _response_for_existing_send(plan_id, dict(existing_send))
 
-        approval = conn.execute(
+        approval_row = conn.execute(
             """SELECT * FROM notification_approvals
                WHERE plan_id = ? AND content_hash = ? AND approved_by = ?
                  AND consumed_at IS NULL
                ORDER BY approved_at DESC LIMIT 1""",
             (plan_id, content_hash, user_id),
         ).fetchone()
-        if not approval:
+        if not approval_row:
+            conn.rollback()
             return {
                 "ok": False,
                 "error": "NOT_APPROVED",
                 "message": "No valid notification approval for this draft hash.",
             }
-        approval = dict(approval)
+        approval = dict(approval_row)
         if approval.get("expires_at"):
             exp = datetime.fromisoformat(approval["expires_at"])
             if _now() > exp:
+                conn.rollback()
                 return {
                     "ok": False,
                     "error": "EXPIRED",
                     "message": "Notification approval has expired.",
                 }
 
-        drafts = json.loads(draft["drafts_json"])
-        sent = []
-        for d in drafts:
-            result = message_provider.send_message({**d, "status": "draft"})
-            sent.append(result)
-
         send_id = _id()
-        conn.execute(
-            """INSERT INTO notification_sends
-               (id, plan_id, draft_id, content_hash, result_json, status, created_at)
-               VALUES (?, ?, ?, ?, ?, 'sent', ?)""",
-            (send_id, plan_id, draft["id"], content_hash, json.dumps(sent), _now_iso()),
-        )
+        try:
+            conn.execute(
+                """INSERT INTO notification_sends
+                   (id, plan_id, draft_id, content_hash, result_json, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'sending', ?)""",
+                (send_id, plan_id, draft["id"], content_hash, "[]", _now_iso()),
+            )
+        except sqlite3.IntegrityError:
+            # Lost the race — another worker reserved this (plan, hash)
+            existing = conn.execute(
+                "SELECT * FROM notification_sends WHERE plan_id = ? AND content_hash = ?",
+                (plan_id, content_hash),
+            ).fetchone()
+            conn.rollback()
+            if existing:
+                return _response_for_existing_send(plan_id, dict(existing))
+            return {
+                "ok": False,
+                "error": "CLAIM_FAILED",
+                "message": "Could not claim send reservation.",
+            }
+
         conn.execute(
             "UPDATE notification_approvals SET consumed_at = ? WHERE id = ?",
             (_now_iso(), approval["id"]),
         )
         conn.execute(
-            "UPDATE notification_drafts SET status = 'sent' WHERE id = ?",
+            "UPDATE notification_drafts SET status = 'sending' WHERE id = ?",
             (draft["id"],),
+        )
+        conn.commit()
+        drafts = json.loads(draft["drafts_json"])
+        draft_id = draft["id"]
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    # --- Phase 2: provider dispatch (only the winner reaches here) ---
+    sent: list[dict] = []
+    try:
+        for d in drafts:
+            result = message_provider.send_message({**d, "status": "draft"})
+            sent.append(result)
+    except Exception as e:
+        # Outcome unknown after possible partial dispatch — do not invent success or retry
+        with db_session() as c2:
+            c2.execute(
+                """UPDATE notification_sends
+                   SET status = 'uncertain', result_json = ?
+                   WHERE id = ?""",
+                (json.dumps({"error": str(e), "partial": sent}), send_id),
+            )
+            c2.execute(
+                "UPDATE notification_drafts SET status = 'uncertain' WHERE id = ?",
+                (draft_id,),
+            )
+        return {
+            "ok": False,
+            "error": "SEND_UNCERTAIN",
+            "plan_id": plan_id,
+            "draft_id": draft_id,
+            "status": "uncertain",
+            "sent": sent,
+            "message": (
+                "Provider dispatch failed after reservation. Outcome uncertain; "
+                "will not auto-retry. Manual check required."
+            ),
+            "provider": "simulated",
+        }
+
+    # --- Phase 3: finalize ---
+    with db_session() as c3:
+        c3.execute(
+            """UPDATE notification_sends
+               SET status = 'sent', result_json = ?
+               WHERE id = ? AND status = 'sending'""",
+            (json.dumps(sent), send_id),
+        )
+        c3.execute(
+            "UPDATE notification_drafts SET status = 'sent' WHERE id = ?",
+            (draft_id,),
         )
 
     return {
         "ok": True,
         "plan_id": plan_id,
-        "draft_id": draft["id"],
+        "draft_id": draft_id,
         "sent": sent,
         "status": "sent",
         "message": f"Sent {len(sent)} notification(s) via simulated mock provider.",

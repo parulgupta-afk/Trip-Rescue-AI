@@ -77,6 +77,9 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
             args["plan_id"], user_id, args.get("force_fail_step"),
         ),
         "get_plan_status": lambda: trip_tools.get_plan_status(args["plan_id"]),
+        "recover_stuck_execution": lambda: trip_tools.recover_stuck_execution(
+            args["plan_id"], user_id
+        ),
         "draft_notifications": lambda: trip_tools.draft_notifications(
             args["plan_id"], user_id
         ),
@@ -96,6 +99,7 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
         "approve_rescue_plan": ["plan_id", "plan_hash"],
         "execute_rescue_plan": ["plan_id"],
         "get_plan_status": ["plan_id"],
+        "recover_stuck_execution": ["plan_id"],
         "draft_notifications": ["plan_id"],
         "approve_notifications": ["plan_id", "draft_hash"],
         "send_notifications": ["plan_id"],

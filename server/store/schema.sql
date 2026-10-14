@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS execution_steps (
     plan_id TEXT NOT NULL REFERENCES plans(id),
     step_number INTEGER NOT NULL,
     action_type TEXT NOT NULL,
-    status TEXT NOT NULL,  -- pending | success | failed | compensated
+    status TEXT NOT NULL,  -- sending | sent | uncertain  -- pending | success | failed | compensated
     result_json TEXT,
     error_code TEXT,
     started_at TEXT,
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS notification_sends (
     draft_id TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     result_json TEXT NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL,  -- sending | sent | uncertain
     created_at TEXT NOT NULL,
     UNIQUE(plan_id, content_hash)
 );

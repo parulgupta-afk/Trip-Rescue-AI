@@ -306,12 +306,10 @@ function App() {
     setBackendResult(null)
     setBackendPlan(null)
     setBackendError(null)
-    announce('Demo reset to the approval checkpoint.')
+    announce('UI reset to review. Backend plan history is unchanged.')
   }
 
   const deletePreferencesAction = async () => {
-    setPreferences(emptyPreferences)
-    setPreferencesDeleted(true)
     try {
       await Promise.all([
         mcp.deletePreference('preferred_airline'),
@@ -319,15 +317,15 @@ function App() {
         mcp.deletePreference('max_additional_cost'),
         mcp.deletePreference('avoid_overnight'),
       ])
+      setPreferences(emptyPreferences)
+      setPreferencesDeleted(true)
       announce('Saved preferences deleted from backend database.')
-    } catch {
-      announce('Saved preferences cleared locally.')
+    } catch (e: any) {
+      announce(`Could not delete preferences on server: ${e?.message || 'backend offline'}. UI unchanged.`)
     }
   }
 
   const restorePreferencesAction = async () => {
-    setPreferences(initialPreferences)
-    setPreferencesDeleted(false)
     try {
       await Promise.all([
         mcp.savePreference('preferred_airline', 'Example Air'),
@@ -335,9 +333,11 @@ function App() {
         mcp.savePreference('max_additional_cost', 3000),
         mcp.savePreference('avoid_overnight', true),
       ])
+      setPreferences(initialPreferences)
+      setPreferencesDeleted(false)
       announce('Saved preferences restored on database.')
-    } catch {
-      announce('Saved preferences restored.')
+    } catch (e: any) {
+      announce(`Could not restore preferences on server: ${e?.message || 'backend offline'}. UI unchanged.`)
     }
   }
 
@@ -561,9 +561,9 @@ function App() {
           </section>
 
           <aside className="activity-column">
-            <div className="activity-header"><div><span className="eyebrow">AGENT ACTIVITY</span><h2>What’s happening</h2></div><span className="live-pill"><i />LIVE</span></div>
+            <div className="activity-header"><div><span className="eyebrow">AGENT ACTIVITY</span><h2>What’s happening</h2></div><span className="live-pill"><i />MIXED</span></div>
             <div className="activity-card panel">
-              <div className="activity-card-head"><span className="activity-pulse"><i /><i /><i /></span><div><strong>{stage === 'review' ? 'Waiting for your approval' : stage === 'executing' ? 'Executing approved plan' : stage === 'recovered' ? 'Recovery reconciled' : 'Compensation complete'}</strong><small>{stage === 'review' ? 'No commit action has run.' : 'Every step is logged and versioned.'}</small></div></div>
+              <div className="activity-card-head"><span className="activity-pulse"><i /><i /><i /></span><div><strong>{stage === 'review' ? 'Waiting for your approval' : stage === 'executing' ? 'Executing approved plan' : stage === 'recovered' ? 'Backend confirmed recovery' : 'Backend reported partial failure'}</strong><small>{stage === 'review' ? 'Timeline mixes illustrative scenario rows with live tool results after you run a plan.' : backendResult ? `Server status: ${backendResult.status}` : 'Awaiting server confirmation.'}</small></div></div>
               <div className="event-list">{activityEvents.map((event) => {
                 const state = eventState(event.id)
                 return <div className={`event-row event-row--${state}`} key={event.id}><span className="event-marker">{state === 'done' ? <Icon name="check" size={11} /> : state === 'running' ? <span className="event-spinner" /> : state === 'warning' ? '!' : ''}</span><div className="event-copy"><div><strong>{event.name}</strong><TierBadge tier={event.tier} /></div><small>{event.detail}</small></div><span className="event-time mono">{event.time}</span></div>
@@ -581,7 +581,7 @@ function App() {
         <footer className="app-footer"><span><span className="footer-mark" />Travel data, providers and messaging are fictional mocks · MCP server, approval, execution, rollback and memory are real code</span><span className="mono">MCP 2025-11-25 · BUILD 0.9.4</span></footer>
       </main>
 
-      {preferencesOpen && <div className="drawer-backdrop" onClick={() => setPreferencesOpen(false)}><aside className="preferences-drawer" role="dialog" aria-modal="true" aria-labelledby="preferences-title" onClick={(event) => event.stopPropagation()}><div className="drawer-header"><div><span className="eyebrow">TRAVELLER MEMORY</span><h2 id="preferences-title">Preferences</h2></div><button className="icon-button icon-button--large" onClick={() => setPreferencesOpen(false)} aria-label="Close preferences"><Icon name="close" size={18} /></button></div><p className="drawer-intro">{preferencesDeleted ? 'No saved preferences are active. Restore defaults or make a new choice below.' : 'These choices shape how Trip Rescue ranks alternatives. You can edit or delete them at any time.'}</p><div className="preference-list"><PreferenceRow label="Preferred airline" value={preferences.airline} options={['SAS / Star Alliance', 'Any airline']} onChange={() => togglePreference('airline', ['SAS / Star Alliance', 'Any airline'])} /><PreferenceRow label="Seat preference" value={preferences.seat} options={['Window', 'Aisle']} onChange={() => togglePreference('seat', ['Window', 'Aisle'])} /><PreferenceRow label="Max cost change" value={preferences.maxDelta} options={['$75', '$150']} onChange={() => togglePreference('maxDelta', ['$75', '$150'])} /><PreferenceRow label="Overnight travel" value={preferences.overnight} options={['Avoid overnight flights', 'Overnight is okay']} onChange={() => togglePreference('overnight', ['Avoid overnight flights', 'Overnight is okay'])} /></div><div className="drawer-note"><Icon name="database" size={15} /><span>Saved locally for this demo. In production, these preferences are stored with the trip profile and can be deleted.</span></div><div className="drawer-actions"><button className="delete-link" onClick={deletePreferencesAction}>Delete saved preferences</button><button className="restore-link" onClick={restorePreferencesAction}>Restore defaults</button></div></aside></div>}
+      {preferencesOpen && <div className="drawer-backdrop" onClick={() => setPreferencesOpen(false)}><aside className="preferences-drawer" role="dialog" aria-modal="true" aria-labelledby="preferences-title" onClick={(event) => event.stopPropagation()}><div className="drawer-header"><div><span className="eyebrow">TRAVELLER MEMORY</span><h2 id="preferences-title">Preferences</h2></div><button className="icon-button icon-button--large" onClick={() => setPreferencesOpen(false)} aria-label="Close preferences"><Icon name="close" size={18} /></button></div><p className="drawer-intro">{preferencesDeleted ? 'No saved preferences are active. Restore defaults or make a new choice below.' : 'These choices shape how Trip Rescue ranks alternatives. You can edit or delete them at any time.'}</p><div className="preference-list"><PreferenceRow label="Preferred airline" value={preferences.airline} options={['SAS / Star Alliance', 'Any airline']} onChange={() => togglePreference('airline', ['SAS / Star Alliance', 'Any airline'])} /><PreferenceRow label="Seat preference" value={preferences.seat} options={['Window', 'Aisle']} onChange={() => togglePreference('seat', ['Window', 'Aisle'])} /><PreferenceRow label="Max cost change" value={preferences.maxDelta} options={['$75', '$150']} onChange={() => togglePreference('maxDelta', ['$75', '$150'])} /><PreferenceRow label="Overnight travel" value={preferences.overnight} options={['Avoid overnight flights', 'Overnight is okay']} onChange={() => togglePreference('overnight', ['Avoid overnight flights', 'Overnight is okay'])} /></div><div className="drawer-note"><Icon name="database" size={15} /><span>Edits call the backend save/delete tools. UI only updates after the server confirms. Providers remain simulated.</span></div><div className="drawer-actions"><button className="delete-link" onClick={deletePreferencesAction}>Delete saved preferences</button><button className="restore-link" onClick={restorePreferencesAction}>Restore defaults</button></div></aside></div>}
       {toast && <div className="toast" role="status"><span className="toast-icon"><Icon name="check" size={14} /></span>{toast}</div>}
     </div>
   )
