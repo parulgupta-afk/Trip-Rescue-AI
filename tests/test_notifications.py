@@ -105,3 +105,45 @@ def test_wrong_owner_cannot_send():
     sent = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"], user_id="other-user")
     assert sent["ok"] is False
     assert sent["error"] in ("OWNERSHIP", "NOT_APPROVED", "NO_DRAFT")
+
+
+def test_send_requires_exact_hash():
+    """send_notifications with missing or empty hash must be rejected."""
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    res_none = trip_tools.send_notifications(plan["plan_id"], None)
+    assert res_none["ok"] is False
+    assert res_none["error"] == "HASH_REQUIRED"
+
+    res_empty = trip_tools.send_notifications(plan["plan_id"], "")
+    assert res_empty["ok"] is False
+    assert res_empty["error"] == "HASH_REQUIRED"
+
+
+def test_unapproved_plan_cannot_approve_or_send_notifications():
+    """Unapproved/pending plan cannot approve or send notification drafts."""
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    assert plan["status"] == "awaiting_approval"
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    ap = trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    assert ap["ok"] is False
+    assert ap["error"] == "INVALID_PLAN_STATUS"
+
+    sent = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert sent["ok"] is False
+    assert sent["error"] == "INVALID_PLAN_STATUS"
+
+
+def test_already_sent_draft_cannot_be_reapproved():
+    """Sent notification draft cannot be approved again."""
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    sent = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert sent["ok"] is True
+
+    # Try re-approving the sent draft
+    re_ap = trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    assert re_ap["ok"] is False
+    assert re_ap["error"] == "ALREADY_SENT"

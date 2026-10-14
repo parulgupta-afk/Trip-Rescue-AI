@@ -114,3 +114,21 @@ def test_recover_stuck_executing():
     result = execution_service.recover_stuck_execution(plan["plan_id"])
     assert result["ok"] is True
     assert result["status"] == "partially_failed"
+
+
+def test_ownership_check_on_approve_rejected():
+    """Approving a plan belonging to another user must be rejected."""
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    bad = trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"], user_id="user-imposter")
+    assert bad["ok"] is False
+    assert bad["error"] == "OWNERSHIP"
+
+
+def test_ownership_check_on_execute_rejected():
+    """Executing a plan belonging to another user must be rejected."""
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    bad = trip_tools.execute_rescue_plan(plan["plan_id"], user_id="user-imposter")
+    assert bad["ok"] is False
+    assert bad["error"] == "OWNERSHIP"
+

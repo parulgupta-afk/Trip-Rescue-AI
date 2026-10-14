@@ -26,10 +26,12 @@ def propose_rescue_plan(
     trip_id: str,
     user_id: str,
     selected_flight_id: str,
+    allow_budget_override: bool = False,
 ) -> dict[str, Any]:
     """
     Build a complete recovery plan for the selected alternative flight.
     No side-effects – only persists the proposal.
+    Rejects plans exceeding user's max_additional_cost unless allow_budget_override=True.
     """
     trip = repo.get_trip(trip_id)
     if not trip:
@@ -101,10 +103,11 @@ def propose_rescue_plan(
     except (TypeError, ValueError):
         max_cost = 3000
     if total_cost > max_cost:
-        raise ValueError(
-            f"Plan cost +{total_cost} exceeds max additional cost {max_cost}. "
-            "Choose a lower-cost alternative or raise your budget preference."
-        )
+        if not allow_budget_override:
+            raise ValueError(
+                f"Plan cost +{total_cost} exceeds max additional cost {max_cost}. "
+                "Choose a lower-cost alternative, raise your budget preference, or explicitly set allow_budget_override=True."
+            )
 
     plan_hash = compute_plan_hash(actions, total_cost, trip_id)
 

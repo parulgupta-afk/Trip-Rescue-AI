@@ -52,3 +52,18 @@ def test_budget_exact_boundary_allowed():
     trip_tools.save_preference("max_additional_cost", 2000)  # FLIGHT-A cost
     result = trip_tools.propose_rescue_plan("FLIGHT-A")
     assert "plan_id" in result and "error" not in result
+
+
+def test_budget_override_allowed_when_explicit():
+    """Budget violation allowed when allow_budget_override is True."""
+    ensure_schema()
+    repo.seed_demo_data(wipe=True)
+    trip_tools.save_preference("max_additional_cost", 500)
+    # Without override -> rejected
+    blocked = trip_tools.propose_rescue_plan("FLIGHT-A")
+    assert blocked.get("ok") is False or "error" in blocked
+
+    # With explicit override -> allowed
+    allowed = trip_tools.propose_rescue_plan("FLIGHT-A", allow_budget_override=True)
+    assert "plan_id" in allowed
+    assert allowed["total_cost_delta"] == 2000

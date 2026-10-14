@@ -65,15 +65,16 @@ def propose_rescue_plan(
     selected_flight_id: str,
     trip_id: str = "TRIP-100",
     user_id: str = "user-alex",
+    allow_budget_override: bool = False,
 ) -> dict[str, Any]:
     """
     Generate a coordinated recovery plan for the selected flight.
     Does NOT execute anything – returns a plan awaiting approval.
-    Rejects over-budget selections unless within max_additional_cost.
+    Rejects over-budget selections unless within max_additional_cost or allow_budget_override=True.
     """
     _ensure_ready()
     try:
-        plan = engine_propose(trip_id, user_id, selected_flight_id)
+        plan = engine_propose(trip_id, user_id, selected_flight_id, allow_budget_override=allow_budget_override)
         return plan
     except ValueError as e:
         return {"error": str(e), "ok": False}
