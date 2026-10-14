@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -144,7 +145,23 @@ def send_notifications(
     draft_hash: str | None = None,
     user_id: str = "user-alex",
 ) -> dict[str, Any]:
-    """Send only with valid unexpired unconsumed hash-bound approval."""
+    """
+    Send only with valid unexpired unconsumed hash-bound approval.
+
+    Concurrency design:
+    - The idempotency check (SELECT notification_sends) runs first inside a
+      single db_session so that a second caller that reaches this point after
+      the first INSERT will immediately return idempotent=True.
+    - INSERT uses the UNIQUE(plan_id, content_hash) DB constraint as the final
+      guard: if two requests slip through the SELECT check simultaneously, only
+      one INSERT succeeds; the other hits IntegrityError and falls through to
+      return the already-written record.
+    - The narrow window between approval-check and INSERT cannot fully be
+      eliminated without serialising around the external provider call, which
+      would block the event loop. In this mock architecture the provider call
+      is idempotent and has no real side effects, so duplicate invocation is
+      acceptable and the final state will always be idempotent=True.
+    """
     plan = repo.get_plan(plan_id)
     if not plan:
         return {"ok": False, "error": "PLAN_NOT_FOUND", "message": f"Plan {plan_id} not found"}
@@ -184,7 +201,7 @@ def send_notifications(
             }
         content_hash = draft_hash
 
-        # Idempotency: already sent this content
+        # --- Idempotency check FIRST (before approval lookup) ---
         existing_send = conn.execute(
             "SELECT * FROM notification_sends WHERE plan_id = ? AND content_hash = ?",
             (plan_id, content_hash),
@@ -201,6 +218,7 @@ def send_notifications(
                 "provider": "simulated",
             }
 
+        # --- Approval check ---
         approval = conn.execute(
             """SELECT * FROM notification_approvals
                WHERE plan_id = ? AND content_hash = ? AND approved_by = ?
@@ -224,6 +242,7 @@ def send_notifications(
                     "message": "Notification approval has expired.",
                 }
 
+        # --- Dispatch (mock provider, idempotent) ---
         drafts = json.loads(draft["drafts_json"])
         sent = []
         for d in drafts:
@@ -231,12 +250,32 @@ def send_notifications(
             sent.append(result)
 
         send_id = _id()
-        conn.execute(
-            """INSERT INTO notification_sends
-               (id, plan_id, draft_id, content_hash, result_json, status, created_at)
-               VALUES (?, ?, ?, ?, ?, 'sent', ?)""",
-            (send_id, plan_id, draft["id"], content_hash, json.dumps(sent), _now_iso()),
-        )
+        try:
+            conn.execute(
+                """INSERT INTO notification_sends
+                   (id, plan_id, draft_id, content_hash, result_json, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'sent', ?)""",
+                (send_id, plan_id, draft["id"], content_hash, json.dumps(sent), _now_iso()),
+            )
+        except sqlite3.IntegrityError:
+            # Concurrent caller inserted first — UNIQUE(plan_id, content_hash) fired.
+            # Re-read the winner's row and return idempotent response.
+            row = conn.execute(
+                "SELECT * FROM notification_sends WHERE plan_id = ? AND content_hash = ?",
+                (plan_id, content_hash),
+            ).fetchone()
+            if row:
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "plan_id": plan_id,
+                    "status": row["status"],
+                    "sent": json.loads(row["result_json"]),
+                    "message": "Notifications already sent by concurrent request (idempotent).",
+                    "provider": "simulated",
+                }
+            raise  # Unexpected — re-raise so the caller sees the error
+
         conn.execute(
             "UPDATE notification_approvals SET consumed_at = ? WHERE id = ?",
             (_now_iso(), approval["id"]),
