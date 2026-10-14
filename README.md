@@ -35,6 +35,20 @@ Judges should evaluate agent tool use, approval safety, and failure handling in 
 - Demo seed only inserts if missing; tests use explicit `wipe=True`.
 - UI never claims success when the backend fails.
 
+### Verified vs simulated
+
+| Capability | Status |
+|------------|--------|
+| Approval-bound plan execution | Automated tests |
+| Hash-bound notification send | Automated tests |
+| Non-destructive DB seed | Automated tests |
+| Budget rejection | Automated tests |
+| Agent package import (`from agent...`) | CI + local |
+| Browser UI design scenario copy | Design mock; execution uses backend |
+| Flight/hotel/ride/message providers | **Simulated** |
+| Live Alexa+ device skill | **Not implemented** |
+| Real airline APIs | **Not implemented** |
+
 ## Provider honesty
 
 All flight, hotel, ride, and messaging operations use **local mock providers**.  

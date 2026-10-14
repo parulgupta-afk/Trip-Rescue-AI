@@ -134,6 +134,11 @@ function App() {
   const [preferencesOpen, setPreferencesOpen] = useState(false)
   const [rawCallsOpen, setRawCallsOpen] = useState(false)
   const [toast, setToast] = useState('')
+  const [backendPlan, setBackendPlan] = useState<any>(null)
+  const [backendResult, setBackendResult] = useState<any>(null)
+  const [toolLog, setToolLog] = useState<string[]>([])
+  const [backendError, setBackendError] = useState<string | null>(null)
+  const [prefsLoading, setPrefsLoading] = useState(false)
   const rankedAlternatives = useMemo(() => {
     const score = (option: Alternative) => {
       let value = 0
@@ -174,28 +179,49 @@ function App() {
   const executePlan = async (outcome: 'recovered' | 'partial_failure' = 'recovered') => {
     if (isBusy) return
     setStage('executing')
+    setBackendError(null)
+    setBackendResult(null)
+    setBackendPlan(null)
+    const log: string[] = []
+    const pushLog = (line: string) => { log.push(line); setToolLog([...log]) }
     announce('Calling rescue server · propose → approve → execute…')
     const flightId = FLIGHT_MAP[selectedId] || 'FLIGHT-A'
     const forceFail = outcome === 'partial_failure' ? 'reschedule_ride' : undefined
     try {
+      pushLog(`propose_rescue_plan({ selected_flight_id: "${flightId}" })`)
       const plan = await mcp.proposeRescuePlan(flightId)
-      if (plan.error || !plan.plan_id) throw new Error(plan.error || 'Plan failed')
+      if (plan.error || !plan.plan_id) throw new Error(plan.error || 'Plan proposal failed')
+      setBackendPlan(plan)
+      pushLog(`// plan_id=${plan.plan_id} hash=${String(plan.plan_hash).slice(0, 16)}… cost=+${plan.total_cost_delta}`)
+
+      pushLog(`approve_rescue_plan({ plan_id: "${plan.plan_id}", plan_hash: "…" })`)
       const approval = await mcp.approveRescuePlan(plan.plan_id, plan.plan_hash)
       if (!approval.ok) throw new Error(approval.message || approval.error || 'Approval failed')
+      pushLog(`// approved expires=${approval.expires_at || 'n/a'}`)
+
+      pushLog(`execute_rescue_plan({ plan_id: "${plan.plan_id}"${forceFail ? `, force_fail_step: "${forceFail}"` : ''} })`)
       const result = await mcp.executeRescuePlan(plan.plan_id, forceFail)
-      const finalStage: DemoStage =
-        result.status === 'succeeded' ? 'recovered' : 'partial_failure'
-      setStage(finalStage)
-      announce(
-        finalStage === 'recovered'
-          ? `Recovery complete · plan ${plan.plan_id} · all steps succeeded.`
-          : `Partial failure · plan ${plan.plan_id} · compensations applied where possible.`,
-      )
+      setBackendResult(result)
+      if (result.status === 'succeeded') {
+        setStage('recovered')
+        announce(`Backend confirmed success · plan ${plan.plan_id} · +₹${plan.total_cost_delta} (simulated providers)`)
+        pushLog(`// status=succeeded steps=${(result.steps || []).length}`)
+      } else if (result.status === 'failed_rolled_back' || result.status === 'partially_failed') {
+        setStage('partial_failure')
+        announce(`Backend reported ${result.status} · plan ${plan.plan_id}`)
+        pushLog(`// status=${result.status} compensations=${(result.compensations || []).length}`)
+      } else {
+        setStage('review')
+        setBackendError(`Unexpected status: ${result.status || 'unknown'}`)
+        announce(`Unexpected execution status: ${result.status || 'unknown'}`)
+        pushLog(`// unexpected status=${result.status}`)
+      }
     } catch (err: any) {
-      // Never claim success without backend confirmation
       setStage('review')
       const msg = err?.message || String(err) || 'Unknown backend error'
+      setBackendError(msg)
       announce(`Recovery failed: ${msg}. No changes were applied.`)
+      pushLog(`// ERROR ${msg}`)
     }
   }
 
@@ -205,11 +231,33 @@ function App() {
     announce('Demo reset to the approval checkpoint.')
   }
 
-  const togglePreference = (key: keyof typeof preferences, values: string[]) => {
+  const togglePreference = async (key: keyof typeof preferences, values: string[]) => {
     const current = preferences[key]
     const next = values.find((value) => value !== current) ?? current
     setPreferencesDeleted(false)
     setPreferences((previous) => ({ ...previous, [key]: next }))
+    const keyMap: Record<string, string> = {
+      airline: 'preferred_airline',
+      seat: 'seat',
+      maxDelta: 'max_additional_cost',
+      overnight: 'avoid_overnight',
+    }
+    const backendKey = keyMap[key]
+    if (!backendKey) return
+    let value: string | number | boolean = next
+    if (key === 'seat') value = next.toLowerCase().includes('window') ? 'window' : 'aisle'
+    if (key === 'maxDelta') value = Number(String(next).replace(/[^0-9]/g, '')) || 3000
+    if (key === 'overnight') value = !String(next).toLowerCase().includes('okay')
+    if (key === 'airline') value = next.includes('SAS') ? 'Example Air' : next
+    setPrefsLoading(true)
+    try {
+      await mcp.savePreference(backendKey, value)
+      announce(`Saved preference ${backendKey} on server.`)
+    } catch (e: any) {
+      announce(`Could not save preference: ${e?.message || 'backend offline'}`)
+    } finally {
+      setPrefsLoading(false)
+    }
   }
 
   const activityEvents = useMemo(() => {
@@ -302,9 +350,11 @@ function App() {
                 <div className="plan-item"><span className="plan-icon plan-icon--car"><Icon name="car" size={17} /></span><span className="plan-item-copy"><strong>Reschedule airport ride</strong><small>{trip.ride} · pickup updated to 11:35</small></span><span className={`plan-item-state${stage === 'partial_failure' ? ' plan-item-state--warning' : ''}`}>{stage === 'partial_failure' ? 'COMPENSATED' : 'READY'}<small>{stage === 'partial_failure' ? '$18 refunded' : '+$18'}</small></span></div>
                 <div className="plan-item"><span className="plan-icon plan-icon--message"><Icon name="message" size={17} /></span><span className="plan-item-copy"><strong>{stage === 'partial_failure' ? 'Message delivered to Maya' : 'Draft message to Maya'}</strong><small>“Landing at 11:05 now—ride is moved. See you soon.”</small></span><span className={`plan-item-state ${stage === 'partial_failure' ? 'plan-item-state--warning' : 'plan-item-state--safe'}`}>{stage === 'partial_failure' ? 'DELIVERED' : 'DRAFTED'}<small>{stage === 'partial_failure' ? 'Cannot undo' : 'Not sent'}</small></span></div>
               </div>
-              <div className="plan-total"><span><span className="eyebrow">TOTAL COST CHANGE</span><strong>{selected.delta + 18 >= 0 ? '+' : '-'}${Math.abs(selected.delta + 18)}.00</strong><small>calculated by rescue server · taxes included</small></span><span className="plan-lock"><Icon name="lock" size={15} />Approval is bound to this exact plan</span></div>
+              <div className="plan-total"><span><span className="eyebrow">TOTAL COST CHANGE</span><strong>{backendPlan ? `+₹${backendPlan.total_cost_delta}` : '—'}</strong><small>{backendPlan ? `plan ${backendPlan.plan_id} · hash ${String(backendPlan.plan_hash).slice(0, 12)}… · simulated providers` : 'Cost appears after server proposes the plan'}</small></span><span className="plan-lock"><Icon name="lock" size={15} />Approval is bound to the exact server plan hash</span></div>
               <div className="plan-actions">
-                {stage === 'review' && <button className="primary-button" onClick={() => executePlan('recovered')}><Icon name="shield" size={17} />Approve exact plan <span>→</span></button>}
+                {backendError && <p className="plan-disclaimer" style={{color:'#b45041'}}><Icon name="close" size={15} />{backendError}</p>}
+                {backendResult && <p className="plan-disclaimer">Last execution: <strong>{backendResult.status}</strong>{backendResult.message ? ` — ${backendResult.message}` : ''} (providers: simulated)</p>}
+                {stage === 'review' && <button className="primary-button" onClick={() => executePlan('recovered')}><Icon name="shield" size={17} />Propose, approve &amp; execute <span>→</span></button>}
                 {stage === 'executing' && <button className="primary-button primary-button--busy" disabled><span className="button-spinner" />Executing safely…</button>}
                 {stage === 'recovered' && <button className="primary-button primary-button--success" onClick={resetDemo}><Icon name="refresh" size={17} />Run demo again</button>}
                 {stage === 'partial_failure' && <button className="primary-button primary-button--warning" onClick={resetDemo}><Icon name="refresh" size={17} />Review recovery again</button>}
@@ -324,7 +374,7 @@ function App() {
                 return <div className={`event-row event-row--${state}`} key={event.id}><span className="event-marker">{state === 'done' ? <Icon name="check" size={11} /> : state === 'running' ? <span className="event-spinner" /> : state === 'warning' ? '!' : ''}</span><div className="event-copy"><div><strong>{event.name}</strong><TierBadge tier={event.tier} /></div><small>{event.detail}</small></div><span className="event-time mono">{event.time}</span></div>
               })}</div>
               <button className="activity-link" onClick={() => setRawCallsOpen((value) => !value)}><Icon name="terminal" size={15} />{rawCallsOpen ? 'Hide raw tool calls' : 'View raw tool calls'}<Icon name="arrow" size={14} /></button>
-              {rawCallsOpen && <div className="raw-calls"><div className="raw-head"><span className="eyebrow">MCP STREAM · READ ONLY</span><StatusChip tone="teal" dot>VALIDATED</StatusChip></div>{(stage === 'review' ? rawCalls : rawCalls.map((call) => call.replace(' // blocked until approval', ' // approval hash verified'))).concat(stage === 'partial_failure' ? ['commit.compensate_ride({ ride_id: "RIDE-882" }) // compensated', 'commit.send_message({ draft_id: "MSG-22" }) // delivered · irreversible'] : []).map((call) => <code key={call}>{call}</code>)}</div>}
+              {rawCallsOpen && <div className="raw-calls"><div className="raw-head"><span className="eyebrow">TOOL LOG · FROM BACKEND CALLS</span><StatusChip tone="teal" dot>LIVE</StatusChip></div>{(toolLog.length ? toolLog : ['// No tool calls yet — approve a plan to invoke the server']).map((call) => <code key={call}>{call}</code>)}</div>}
             </div>
 
             <div className="trust-card"><div className="trust-icon"><Icon name="shield" size={19} /></div><div><span className="eyebrow">TRUST BOUNDARY</span><strong>Approval lives on the server.</strong><p>The model can recommend. Only a validated, approved plan can execute—and changing it invalidates the approval hash.</p><button onClick={() => announce('Server enforcement: stale, expired and duplicate approvals are refused.')}>See the safety model <Icon name="arrow" size={13} /></button></div></div>
