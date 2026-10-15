@@ -702,3 +702,52 @@ def test_genuinely_stale_reservation_becomes_uncertain_without_redispatch():
     assert retry["ok"] is False
     assert retry["error"] == "SEND_UNCERTAIN"
     assert message_provider.get_send_count() == before_count
+
+
+def test_two_concurrent_execution_requests_dispatch_provider_steps_once():
+    """Two concurrent execute requests: exactly one claims and runs steps; no duplicated side effects."""
+    import threading
+    import time
+    from server.store.database import db_session
+
+    execution_service.reset_execution_hooks()
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+
+    start_gate = threading.Event()
+    results = []
+    lock = threading.Lock()
+
+    def run_worker():
+        start_gate.wait(timeout=5)
+        res = trip_tools.execute_rescue_plan(plan["plan_id"])
+        with lock:
+            results.append(res)
+
+    t1 = threading.Thread(target=run_worker)
+    t2 = threading.Thread(target=run_worker)
+    t1.start()
+    t2.start()
+
+    # Release both threads at once to compete on the claim
+    start_gate.set()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert len(results) == 2
+    # Exactly one executed full plan; the other is either idempotent or claim failed
+    successes = [r for r in results if r.get("status") == "succeeded" and not r.get("idempotent")]
+    assert len(successes) == 1
+
+    # Verify database: each step number exists exactly once
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT step_number, COUNT(*) as cnt FROM execution_steps WHERE plan_id = ? GROUP BY step_number",
+            (plan["plan_id"],),
+        ).fetchall()
+        assert len(rows) >= 3
+        for r in rows:
+            assert r["cnt"] == 1
+
+        p_row = conn.execute("SELECT status FROM plans WHERE id = ?", (plan["plan_id"],)).fetchone()
+        assert p_row["status"] == "succeeded"

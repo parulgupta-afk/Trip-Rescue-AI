@@ -379,6 +379,26 @@ function App() {
     }
   }
 
+  const checkPlanStatusAction = async () => {
+    if (!backendPlan?.plan_id) return
+    try {
+      const status = await mcp.getPlanStatus(backendPlan.plan_id)
+      setBackendResult(status)
+      if (status.status === 'succeeded') {
+        setStage('recovered')
+        setBackendError(null)
+        announce('Plan status confirmed: succeeded')
+      } else if (status.status === 'partially_failed' || status.status === 'failed_rolled_back') {
+        setStage('partial_failure')
+        setBackendError(null)
+        announce(`Plan status confirmed: ${status.status}`)
+      } else {
+        announce(`Current plan status: ${status.status}`)
+      }
+    } catch (err: any) {
+      announce(`Status check failed: ${err?.message || String(err)}`)
+    }
+  }
 
   const draftNotificationAction = async () => {
     if (!backendPlan?.plan_id || sendingNotif) return
@@ -950,7 +970,16 @@ function App() {
                 {(stage === 'proposed') && <button className="primary-button" onClick={() => approvePlan()} disabled={isBusy}><Icon name="shield" size={17} />Approve exact plan hash</button>}
                 {(stage === 'approved') && <button className="primary-button" onClick={() => executeApprovedPlan()} disabled={isBusy}><Icon name="check" size={17} />Execute approved plan</button>}
                 {(stage === 'approved') && <button className="secondary-button" onClick={() => executeApprovedPlan('reschedule_ride')} disabled={isBusy}><Icon name="terminal" size={15} />Execute failure path</button>}
-                {stage === 'uncertain' && <button className="primary-button primary-button--warning" onClick={resetDemo}><Icon name="refresh" size={17} />Reset UI</button>}
+                {stage === 'uncertain' && (
+                  <>
+                    <button className="primary-button primary-button--warning" onClick={checkPlanStatusAction}>
+                      <Icon name="refresh" size={17} />Query server status
+                    </button>
+                    <button className="secondary-button" onClick={resetDemo}>
+                      <Icon name="refresh" size={15} />Reset UI
+                    </button>
+                  </>
+                )}
                 {stage === 'review' && <button className="secondary-button" style={{display:'none'}} onClick={() => executeApprovedPlan('reschedule_ride')}><Icon name="terminal" size={15} />Run failure path</button>}
                 {(stage === 'recovered' || stage === 'partial_failure') && <button className="secondary-button" onClick={() => setRawCallsOpen(true)}><Icon name="audit" size={15} />View audit trail</button>}
               </div>

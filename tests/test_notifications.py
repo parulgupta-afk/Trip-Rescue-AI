@@ -254,3 +254,99 @@ def test_stale_sending_reconciled_without_redispatch():
     again = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
     assert again["ok"] is False
     assert again["error"] == "SEND_UNCERTAIN"
+
+
+def test_provider_failure_before_dispatch_marks_uncertain_and_no_retry():
+    """Provider failure before successful dispatch marks reservation uncertain and records empty partial."""
+    from server.store.database import db_session
+    from server.providers import message_provider
+
+    message_provider.reset_send_hooks()
+
+    def fail_immediately():
+        raise RuntimeError("Simulated network failure to messaging provider")
+
+    message_provider.set_before_send(fail_immediately)
+
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+
+    result = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    message_provider.reset_send_hooks()
+
+    assert result["ok"] is False
+    assert result["error"] == "SEND_UNCERTAIN"
+    assert result["status"] == "uncertain"
+    assert result["sent"] == []
+
+    # Verify database state
+    with db_session() as conn:
+        row = conn.execute("SELECT status, result_json FROM notification_sends WHERE plan_id = ?", (plan["plan_id"],)).fetchone()
+        assert row["status"] == "uncertain"
+        assert "Simulated network failure" in row["result_json"]
+
+    # Verify it is not retried automatically
+    before_count = message_provider.get_send_count()
+    retry = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert retry["ok"] is False
+    assert retry["error"] == "SEND_UNCERTAIN"
+    assert message_provider.get_send_count() == before_count
+
+
+def test_partial_notification_delivery_marks_uncertain_with_partial_results():
+    """Failure after 1st message in multi-message draft preserves partial delivery results as uncertain."""
+    from server.store.database import db_session
+    from server.providers import message_provider
+    import json
+
+    message_provider.reset_send_hooks()
+    plan = _approved_plan()
+
+    # Create a draft with 2 notifications
+    drafts = [
+        {"recipient": "Sam (Driver)", "subject": "Delayed arrival", "body": "Flight delayed by 4h"},
+        {"recipient": "Hotel Front Desk", "subject": "Late check-in", "body": "Checking in at 01:00 AM"},
+    ]
+    import hashlib
+    canonical = json.dumps(drafts, sort_keys=True, separators=(",", ":"))
+    content_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    draft_id = "ND-MULTI-1"
+
+    with db_session() as conn:
+        conn.execute(
+            """INSERT INTO notification_drafts
+               (id, plan_id, user_id, drafts_json, content_hash, status, created_at)
+               VALUES (?, ?, 'user-alex', ?, ?, 'draft', datetime('now'))""",
+            (draft_id, plan["plan_id"], json.dumps(drafts), content_hash),
+        )
+
+    trip_tools.approve_notifications(plan["plan_id"], content_hash)
+
+    # Fail on the second send attempt
+    call_count = 0
+    def fail_on_second():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("Provider failed during 2nd message dispatch")
+
+    message_provider.set_before_send(fail_on_second)
+
+    result = trip_tools.send_notifications(plan["plan_id"], content_hash)
+    message_provider.reset_send_hooks()
+
+    assert result["ok"] is False
+    assert result["error"] == "SEND_UNCERTAIN"
+    assert result["status"] == "uncertain"
+    # Exactly 1 message was delivered before the exception
+    assert len(result["sent"]) == 1
+    assert result["sent"][0]["recipient"] == "Sam (Driver)"
+
+    # Database records partial delivery and uncertain status
+    with db_session() as conn:
+        row = conn.execute("SELECT status, result_json FROM notification_sends WHERE plan_id = ?", (plan["plan_id"],)).fetchone()
+        assert row["status"] == "uncertain"
+        saved = json.loads(row["result_json"])
+        assert len(saved.get("partial", [])) == 1
+        assert "Provider failed during 2nd message dispatch" in saved.get("error", "")

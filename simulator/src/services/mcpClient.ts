@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_MCP_URL || 'http://localhost:8000'
+const rawBase = (import.meta as any).env?.VITE_MCP_URL || 'http://localhost:8000'
+const BASE = String(rawBase).replace(/\/+$/, '')
 
 export async function callTool(name: string, args: Record<string, unknown> = {}): Promise<any> {
   const res = await fetch(`${BASE}/tools/${name}`, {
@@ -42,4 +43,15 @@ export const mcp = {
     callTool('approve_notifications', { plan_id: planId, draft_hash: draftHash }),
   sendNotifications: (planId: string, draftHash: string) =>
     callTool('send_notifications', { plan_id: planId, draft_hash: draftHash }),
+  recoverStuckExecution: (planId: string, staleAfterSeconds?: number) =>
+    callTool('recover_stuck_execution', {
+      plan_id: planId,
+      ...(staleAfterSeconds ? { stale_after_seconds: staleAfterSeconds } : {}),
+    }),
+  reconcileStaleNotificationSend: (planId: string, contentHash: string, staleAfterSeconds?: number) =>
+    callTool('reconcile_stale_notification_send', {
+      plan_id: planId,
+      content_hash: contentHash,
+      ...(staleAfterSeconds ? { stale_after_seconds: staleAfterSeconds } : {}),
+    }),
 }
