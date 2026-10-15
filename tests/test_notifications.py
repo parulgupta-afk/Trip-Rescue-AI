@@ -224,3 +224,33 @@ def test_uncertain_send_not_retried():
     assert result["ok"] is False
     assert result["error"] == "SEND_UNCERTAIN"
     assert message_provider.get_send_count() == before
+
+
+def test_stale_sending_reconciled_without_redispatch():
+    from datetime import datetime, timezone, timedelta
+    from server.store.database import db_session
+    from server.providers import message_provider
+    from server.domain import notification_service
+
+    message_provider.reset_send_hooks()
+    plan = _approved_plan()
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+    past = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    with db_session() as conn:
+        conn.execute(
+            """INSERT INTO notification_sends
+               (id, plan_id, draft_id, content_hash, result_json, status, created_at, claimed_at)
+               VALUES ('stale-1', ?, ?, ?, '[]', 'sending', ?, ?)""",
+            (plan["plan_id"], draft["draft_id"], draft["content_hash"], past, past),
+        )
+    before = message_provider.get_send_count()
+    result = notification_service.reconcile_stale_notification_send(
+        plan["plan_id"], draft["content_hash"], stale_after_seconds=60
+    )
+    assert result.get("status") == "uncertain"
+    assert message_provider.get_send_count() == before
+    # still not retried via send
+    again = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert again["ok"] is False
+    assert again["error"] == "SEND_UNCERTAIN"

@@ -1,4 +1,4 @@
-export type DemoStage = 'review' | 'executing' | 'recovered' | 'partial_failure'
+export type DemoStage = 'review' | 'proposed' | 'approved' | 'executing' | 'recovered' | 'partial_failure' | 'uncertain'
 export type ToolTier = 'read' | 'propose' | 'commit'
 
 export type Alternative = {

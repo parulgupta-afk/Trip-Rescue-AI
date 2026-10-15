@@ -275,17 +275,21 @@ def _get_steps(plan_id: str) -> list[dict]:
         return out
 
 
-def get_plan_status(plan_id: str) -> dict[str, Any]:
+def get_plan_status(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
     plan = repo.get_plan(plan_id)
     if not plan:
-        return {"error": f"Plan {plan_id} not found"}
+        return {"ok": False, "error": "PLAN_NOT_FOUND", "message": f"Plan {plan_id} not found"}
+    if plan["user_id"] != user_id:
+        return {"ok": False, "error": "OWNERSHIP", "message": "Plan does not belong to this user"}
     steps = _get_steps(plan_id)
     return {
+        "ok": True,
         "plan_id": plan_id,
         "status": plan["status"],
         "version": plan["version"],
         "total_cost_delta": plan["total_cost_delta"],
         "plan_hash": plan["plan_hash"],
+        "actions": plan.get("actions"),
         "steps": steps,
     }
 
@@ -294,11 +298,9 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
     """
     Recover a plan stuck in 'executing' after interruption.
 
-    - Ownership and status validated.
-    - Atomic transition: only succeeds if status is still 'executing'.
-    - Each planned action is identified by step_number (1-based index).
-    - Steps with no terminal record are marked 'interrupted' (unknown outcome).
-    - Never invents success or retries providers.
+    Atomic claim first: only the winner of UPDATE ... WHERE status='executing'
+    may write interruption records. Losers leave no side effects.
+    Never retries providers or invents success.
     """
     plan = repo.get_plan(plan_id)
     if not plan:
@@ -315,41 +317,7 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
             "message": f"Plan is not stuck in executing (status={plan['status']}).",
         }
 
-    actions = plan.get("actions") or []
-    existing = _get_steps(plan_id)
-    # Map step_number -> last record
-    by_num: dict[int, dict] = {}
-    for s in existing:
-        by_num[int(s["step_number"])] = s
-
-    interrupted: list[dict] = []
-    for i, action in enumerate(actions):
-        step_number = i + 1
-        action_type = action.get("type", "unknown")
-        step_key = f"{plan_id}:step:{step_number}:{action_type}"
-        rec = by_num.get(step_number)
-        if rec is None:
-            result = {
-                "status": "interrupted",
-                "step_id": step_key,
-                "message": "No terminal provider result recorded before interruption.",
-            }
-            _record_step(
-                plan_id, step_number, action_type, "interrupted", result, "INTERRUPTED", _now_iso()
-            )
-            interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
-        elif rec.get("status") in ("pending", "running", "executing"):
-            result = {
-                "status": "interrupted",
-                "step_id": step_key,
-                "prior_status": rec.get("status"),
-                "message": "Step had non-terminal status at recovery time.",
-            }
-            _record_step(
-                plan_id, step_number, action_type, "interrupted", result, "INTERRUPTED", _now_iso()
-            )
-            interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
-
+    # Claim BEFORE writing any step records
     with db_session() as conn:
         cur = conn.execute(
             "UPDATE plans SET status = 'partially_failed' WHERE id = ? AND status = 'executing'",
@@ -365,8 +333,32 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
             "plan_id": plan_id,
             "status": (current or {}).get("status"),
             "steps": _get_steps(plan_id),
-            "message": "Concurrent status change: plan is no longer executing.",
+            "message": "Concurrent status change: recovery did not claim ownership; no step records written.",
         }
+
+    actions = plan.get("actions") or []
+    existing = _get_steps(plan_id)
+    by_num: dict[int, dict] = {}
+    for s in existing:
+        by_num[int(s["step_number"])] = s
+
+    interrupted: list[dict] = []
+    for i, action in enumerate(actions):
+        step_number = i + 1
+        action_type = action.get("type", "unknown")
+        step_key = f"{plan_id}:step:{step_number}:{action_type}"
+        rec = by_num.get(step_number)
+        terminal = {"success", "failed", "compensated", "interrupted", "uncertain"}
+        if rec is None or rec.get("status") not in terminal:
+            result = {
+                "status": "interrupted",
+                "step_id": step_key,
+                "message": "No terminal provider result recorded before interruption.",
+            }
+            _record_step(
+                plan_id, step_number, action_type, "interrupted", result, "INTERRUPTED", _now_iso()
+            )
+            interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
 
     steps = _get_steps(plan_id)
     return {

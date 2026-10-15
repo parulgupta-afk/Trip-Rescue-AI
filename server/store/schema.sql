@@ -120,5 +120,6 @@ CREATE TABLE IF NOT EXISTS notification_sends (
     result_json TEXT NOT NULL,
     status TEXT NOT NULL,  -- sending | sent | uncertain
     created_at TEXT NOT NULL,
+    claimed_at TEXT,
     UNIQUE(plan_id, content_hash)
 );

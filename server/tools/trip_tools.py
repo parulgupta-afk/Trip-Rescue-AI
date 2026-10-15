@@ -126,10 +126,10 @@ def execute_rescue_plan(
     return execution_service.execute_plan(plan_id, user_id)
 
 
-def get_plan_status(plan_id: str) -> dict:
-    """Return plan status and execution step results."""
+def get_plan_status(plan_id: str, user_id: str = "user-alex") -> dict:
+    """Return plan status and execution step results (ownership enforced)."""
     _ensure_ready()
-    return execution_service.get_plan_status(plan_id)
+    return execution_service.get_plan_status(plan_id, user_id)
 
 
 def draft_notifications(plan_id: str, user_id: str = "user-alex") -> dict:
@@ -173,3 +173,16 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict:
     """Mark an interrupted 'executing' plan as partially_failed; never invents success."""
     _ensure_ready()
     return execution_service.recover_stuck_execution(plan_id, user_id)
+
+
+def reconcile_stale_notification_send(
+    plan_id: str,
+    content_hash: str,
+    user_id: str = "user-alex",
+    stale_after_seconds: int = 120,
+) -> dict:
+    """Mark a stale sending reservation as uncertain without redispatching."""
+    _ensure_ready()
+    return notification_service.reconcile_stale_notification_send(
+        plan_id, content_hash, user_id, stale_after_seconds
+    )

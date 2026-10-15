@@ -142,41 +142,58 @@ function App() {
   const [sendingNotif, setSendingNotif] = useState(false)
   const [toolLog, setToolLog] = useState<string[]>([])
   const [backendError, setBackendError] = useState<string | null>(null)
+  const [liveTrip, setLiveTrip] = useState<any>(null)
+  const [liveDisruption, setLiveDisruption] = useState<any>(null)
+  const [liveAlternatives, setLiveAlternatives] = useState<any[]>([])
+  const [selectedFlightId, setSelectedFlightId] = useState('FLIGHT-A')
+  const [approvalInfo, setApprovalInfo] = useState<any>(null)
+  const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
   const [prefsLoading, setPrefsLoading] = useState(false)
 
   // Sync preferences from server on mount
   useEffect(() => {
     let active = true
-    const loadServerPreferences = async () => {
+    async function bootstrap() {
       try {
-        const res = await mcp.getPreferences()
-        if (!active || !res) return
-        setPreferences((prev) => {
-          const updated = { ...prev }
-          if (res.preferred_airline?.value) {
-            updated.airline = res.preferred_airline.value === 'Example Air' ? 'SAS / Star Alliance' : String(res.preferred_airline.value)
-          }
-          if (res.seat?.value) {
-            updated.seat = String(res.seat.value).toLowerCase() === 'window' ? 'Window' : 'Aisle'
-          }
-          if (res.max_additional_cost?.value !== undefined) {
-            const v = Number(res.max_additional_cost.value)
-            updated.maxDelta = v <= 75 ? '$75' : v <= 150 ? '$150' : 'No limit'
-          }
-          if (res.avoid_overnight?.value !== undefined) {
-            updated.overnight = res.avoid_overnight.value ? 'Avoid overnight flights' : 'Overnight is okay'
-          }
-          return updated
-        })
+        const health = await fetch((import.meta as any).env?.VITE_MCP_URL || 'http://localhost:8000' + '/health').then(r => r.json()).catch(() => null)
+        if (!active) return
+        setBackendOnline(!!health && health.status === 'ok')
       } catch {
-        // Backend offline or error; defaults remain
+        if (active) setBackendOnline(false)
+      }
+      try {
+        const [trip, status, alts, prefs] = await Promise.all([
+          mcp.getTrip(),
+          mcp.checkFlightStatus(),
+          mcp.searchAlternatives(),
+          mcp.getPreferences(),
+        ])
+        if (!active) return
+        if (trip && !trip.error) setLiveTrip(trip)
+        if (status && !status.error) setLiveDisruption(status)
+        if (alts?.alternatives) {
+          setLiveAlternatives(alts.alternatives)
+          if (alts.alternatives[0]?.id) setSelectedFlightId(alts.alternatives[0].id)
+        }
+        if (prefs && !prefs.error) {
+          setPreferences({
+            airline: String(prefs.preferred_airline?.value ?? initialPreferences.airline),
+            seat: String(prefs.seat?.value ?? initialPreferences.seat),
+            maxDelta: prefs.max_additional_cost?.value != null ? `$${prefs.max_additional_cost.value}` : initialPreferences.maxDelta,
+            overnight: prefs.avoid_overnight?.value === false ? 'Overnight is okay' : initialPreferences.overnight,
+            notifications: initialPreferences.notifications,
+          })
+        }
+        setBackendOnline(true)
+      } catch {
+        if (active) setBackendOnline(false)
       }
     }
-    loadServerPreferences()
+    bootstrap()
     return () => { active = false }
   }, [])
 
-  const rankedAlternatives = useMemo(() => {
+  const rankedAlternativesStatic = useMemo(() => {
     const score = (option: Alternative) => {
       let value = 0
       if (preferences.airline.includes('SAS') && option.airline === 'SAS') value += 4
@@ -189,8 +206,35 @@ function App() {
     }
     return [...alternatives].sort((a, b) => score(b) - score(a))
   }, [preferences])
-  const selected = useMemo(() => alternatives.find((option) => option.id === selectedId) ?? alternatives[0], [selectedId])
-  const isBusy = stage === 'executing'
+
+  const displayAlternatives = useMemo(() => {
+    if (liveAlternatives.length) {
+      return liveAlternatives.map((a: any) => ({
+        id: a.id,
+        airline: a.airline,
+        code: (a.airline || '').slice(0, 2).toUpperCase(),
+        flight: a.flight_number,
+        route: liveTrip?.segments ? `${liveTrip.segments[0]?.origin || ''} → ${liveTrip.segments.slice(-1)[0]?.destination || ''}` : '—',
+        departure: a.departure,
+        arrival: a.arrival,
+        duration: a.overnight ? 'overnight' : 'day',
+        stops: 'see plan',
+        seat: a.seat_available || '—',
+        price: `+$${a.extra_cost}`,
+        delta: a.extra_cost,
+        fit: a.why || '',
+        tags: a.overnight ? ['OVERNIGHT'] : ['DAY'],
+        accent: '#f6b73c',
+      }))
+    }
+    return rankedAlternativesStatic
+  }, [liveAlternatives, liveTrip, rankedAlternativesStatic])
+
+  const selected = useMemo(
+    () => displayAlternatives.find((option: any) => option.id === selectedFlightId) ?? displayAlternatives[0] ?? alternatives[0],
+    [displayAlternatives, selectedFlightId],
+  )
+  const isBusy = stage === 'executing' || prefsLoading
 
   useEffect(() => {
     if (!preferencesOpen) return undefined
@@ -208,97 +252,113 @@ function App() {
 
   const selectAlternative = (option: Alternative) => {
     if (isBusy) return
-    setSelectedId(option.id)
+    setSelectedId(option.id); setSelectedFlightId(option.id)
     if (stage !== 'review') setStage('review')
     announce(`${option.airline} ${option.flight} is now the active rescue option.`)
   }
 
-  const executePlan = async (outcome: 'recovered' | 'partial_failure' = 'recovered') => {
+  const proposePlan = async () => {
     if (isBusy) return
-    setStage('executing')
     setBackendError(null)
     setBackendResult(null)
+    setApprovalInfo(null)
     setBackendPlan(null)
-    setNotificationDraft(null)
-    setNotificationSent(false)
     const log: string[] = []
     const pushLog = (line: string) => { log.push(line); setToolLog([...log]) }
-    announce('Calling rescue server · propose → approve → execute…')
-    const flightId = FLIGHT_MAP[selectedId] || 'FLIGHT-A'
-    const forceFail = outcome === 'partial_failure' ? 'reschedule_ride' : undefined
+    announce('Requesting rescue plan from server (no approval, no execution)…')
     try {
-      pushLog(`propose_rescue_plan({ selected_flight_id: "${flightId}" })`)
-      const plan = await mcp.proposeRescuePlan(flightId)
+      pushLog(`propose_rescue_plan({ selected_flight_id: "${selectedFlightId}" })`)
+      const plan = await mcp.proposeRescuePlan(selectedFlightId)
       if (plan.error || !plan.plan_id) throw new Error(plan.error || 'Plan proposal failed')
       setBackendPlan(plan)
+      setStage('proposed')
       pushLog(`// plan_id=${plan.plan_id} hash=${String(plan.plan_hash).slice(0, 16)}… cost=+${plan.total_cost_delta}`)
-
-      pushLog(`approve_rescue_plan({ plan_id: "${plan.plan_id}", plan_hash: "…" })`)
-      const approval = await mcp.approveRescuePlan(plan.plan_id, plan.plan_hash)
-      if (!approval.ok) throw new Error(approval.message || approval.error || 'Approval failed')
-      pushLog(`// approved expires=${approval.expires_at || 'n/a'}`)
-
-      pushLog(`execute_rescue_plan({ plan_id: "${plan.plan_id}"${forceFail ? `, force_fail_step: "${forceFail}"` : ''} })`)
-      const result = await mcp.executeRescuePlan(plan.plan_id, forceFail)
-      setBackendResult(result)
-      if (result.status === 'succeeded') {
-        setStage('recovered')
-        announce(`Backend confirmed success · plan ${plan.plan_id} · +$${plan.total_cost_delta} (simulated providers)`)
-        pushLog(`// status=succeeded steps=${(result.steps || []).length}`)
-        try {
-          pushLog(`draft_notifications({ plan_id: "${plan.plan_id}" })`)
-          const draft = await mcp.draftNotifications(plan.plan_id)
-          setNotificationDraft(draft)
-          pushLog(`// draft ready hash=${String(draft.content_hash).slice(0, 16)}…`)
-        } catch (e: any) {
-          pushLog(`// draft_notifications note: ${e?.message || e}`)
-        }
-      } else if (result.status === 'failed_rolled_back' || result.status === 'partially_failed') {
-        setStage('partial_failure')
-        announce(`Backend reported ${result.status} · plan ${plan.plan_id}`)
-        pushLog(`// status=${result.status} compensations=${(result.compensations || []).length}`)
-      } else {
-        setStage('review')
-        setBackendError(`Unexpected status: ${result.status || 'unknown'}`)
-        announce(`Unexpected execution status: ${result.status || 'unknown'}`)
-        pushLog(`// unexpected status=${result.status}`)
-      }
+      announce(`Plan ${plan.plan_id} ready for review. Nothing has been approved or executed.`)
     } catch (err: any) {
       setStage('review')
-      const msg = err?.message || String(err) || 'Unknown backend error'
+      const msg = err?.message || String(err)
       setBackendError(msg)
-      announce(`Recovery failed: ${msg}. No changes were applied.`)
+      announce(`Proposal failed: ${msg}`)
       pushLog(`// ERROR ${msg}`)
     }
   }
 
-  const sendNotificationAction = async () => {
-    if (!backendPlan || !notificationDraft || sendingNotif) return
-    setSendingNotif(true)
+  const approvePlan = async () => {
+    if (isBusy || !backendPlan?.plan_id || !backendPlan?.plan_hash) return
+    setBackendError(null)
     const log = [...toolLog]
     const pushLog = (line: string) => { log.push(line); setToolLog([...log]) }
+    announce('Submitting approval for exact plan hash…')
     try {
-      pushLog(`approve_notifications({ plan_id: "${backendPlan.plan_id}", draft_hash: "${notificationDraft.content_hash.slice(0, 16)}…" })`)
-      const ap = await mcp.approveNotifications(backendPlan.plan_id, notificationDraft.content_hash)
-      if (!ap.ok) throw new Error(ap.message || ap.error || 'Notification approval failed')
-
-      pushLog(`send_notifications({ plan_id: "${backendPlan.plan_id}", draft_hash: "${notificationDraft.content_hash.slice(0, 16)}…" })`)
-      const sent = await mcp.sendNotifications(backendPlan.plan_id, notificationDraft.content_hash)
-      if (!sent.ok) throw new Error(sent.message || sent.error || 'Failed to send notification')
-
-      setNotificationSent(true)
-      announce(`Notification sent to Sam (${(sent.sent || []).length} message delivered via mock provider)`)
-      pushLog(`// notification sent provider=simulated count=${(sent.sent || []).length}`)
-    } catch (e: any) {
-      const msg = e?.message || String(e)
-      announce(`Could not send notification: ${msg}`)
-      pushLog(`// notification error: ${msg}`)
-    } finally {
-      setSendingNotif(false)
+      pushLog(`approve_rescue_plan({ plan_id: "${backendPlan.plan_id}" })`)
+      const approval = await mcp.approveRescuePlan(backendPlan.plan_id, backendPlan.plan_hash)
+      if (!approval.ok) throw new Error(approval.message || approval.error || 'Approval failed')
+      setApprovalInfo(approval)
+      setStage('approved')
+      pushLog(`// approved expires=${approval.expires_at || 'n/a'}`)
+      announce('Plan approved on server. Execution still requires a separate step.')
+    } catch (err: any) {
+      const msg = err?.message || String(err)
+      setBackendError(msg)
+      announce(`Approval failed: ${msg}`)
+      pushLog(`// ERROR ${msg}`)
     }
   }
 
-  const resetDemo = () => {
+  const executeApprovedPlan = async (forceFail?: string) => {
+    if (isBusy || !backendPlan?.plan_id) return
+    if (stage !== 'approved' && stage !== 'executing') {
+      announce('Approve the plan before executing.')
+      return
+    }
+    setStage('executing')
+    setBackendError(null)
+    const log = [...toolLog]
+    const pushLog = (line: string) => { log.push(line); setToolLog([...log]) }
+    announce('Executing approved plan on server…')
+    try {
+      pushLog(`execute_rescue_plan({ plan_id: "${backendPlan.plan_id}"${forceFail ? `, force_fail: "${forceFail}"` : ''} })`)
+      const result = await mcp.executeRescuePlan(backendPlan.plan_id, forceFail)
+      setBackendResult(result)
+      if (result.status === 'succeeded') {
+        setStage('recovered')
+        announce(`Backend confirmed success · plan ${backendPlan.plan_id}`)
+      } else if (result.status === 'failed_rolled_back' || result.status === 'partially_failed') {
+        setStage('partial_failure')
+        announce(`Backend reported ${result.status}`)
+      } else {
+        setStage('uncertain')
+        setBackendError(`Unexpected status: ${result.status || 'unknown'}`)
+        announce(`Unresolved status: ${result.status}`)
+      }
+      pushLog(`// status=${result.status}`)
+    } catch (err: any) {
+      const msg = err?.message || String(err)
+      pushLog(`// ERROR ${msg}`)
+      try {
+        const status = await mcp.getPlanStatus(backendPlan.plan_id)
+        setBackendResult(status)
+        if (status.status === 'succeeded') {
+          setStage('recovered')
+          announce('Network error on response, but plan status is succeeded on server.')
+        } else if (status.status === 'executing') {
+          setStage('uncertain')
+          setBackendError('Execution may still be in progress; status is unresolved.')
+          announce('Could not confirm completion. Query plan status before retrying.')
+        } else {
+          setStage('uncertain')
+          setBackendError(msg)
+          announce(`Network error after request. Server status: ${status.status}. Do not assume success or failure.`)
+        }
+      } catch {
+        setStage('uncertain')
+        setBackendError(msg)
+        announce(`Network error: ${msg}. Outcome unknown — not claiming "no changes applied".`)
+      }
+    }
+  }
+
+  const resetDemo  const resetDemo = () => {
     setStage('review')
     setRawCallsOpen(false)
     setNotificationSent(false)
@@ -344,6 +404,7 @@ function App() {
   const togglePreference = async (key: keyof typeof preferences, values: string[]) => {
     const current = preferences[key]
     const next = values.find((value) => value !== current) ?? current
+    const previousValue = current
     setPreferencesDeleted(false)
     setPreferences((previous) => ({ ...previous, [key]: next }))
     const keyMap: Record<string, string> = {
@@ -364,7 +425,7 @@ function App() {
       await mcp.savePreference(backendKey, value)
       announce(`Saved preference ${backendKey} on server.`)
     } catch (e: any) {
-      announce(`Could not save preference: ${e?.message || 'backend offline'}`)
+      setPreferences((previous) => ({ ...previous, [key]: previousValue })); announce(`Could not save preference: ${e?.message || 'backend offline'}. Reverted display.`)
     } finally {
       setPrefsLoading(false)
     }
@@ -500,7 +561,7 @@ function App() {
         <header className="topbar">
           <div className="mobile-brand"><BrandMark compact /></div>
           <div className="breadcrumbs"><span>TRIPS</span><Icon name="chevron" size={12} /><strong>TRP-00419</strong><StatusChip tone="blue" dot>DEMO MODE</StatusChip></div>
-          <div className="topbar-actions"><span className="sync-state"><span className="sync-dot" />All systems nominal</span><button className="icon-button" aria-label="Open preferences" onClick={() => setPreferencesOpen(true)}><Icon name="sliders" size={18} /></button><button className="avatar avatar--small" onClick={() => setPreferencesOpen(true)}>AR</button></div>
+          <div className="topbar-actions"><span className="sync-state"><span className="sync-dot" />{backendOnline === true ? 'Backend reachable' : backendOnline === false ? 'Backend offline' : 'Checking backend…'}</span><button className="icon-button" aria-label="Open preferences" onClick={() => setPreferencesOpen(true)}><Icon name="sliders" size={18} /></button><button className="avatar avatar--small" onClick={() => setPreferencesOpen(true)}>AR</button></div>
         </header>
 
         <div className="workspace-grid">
@@ -533,27 +594,48 @@ function App() {
             <section className="alternatives-section">
               <div className="section-heading section-heading--loose"><div><span className="eyebrow">RANKED ALTERNATIVES</span><h2>Three ways forward.</h2></div><button className="text-button" onClick={() => announce('Ranking is based on your saved preferences and current provider data.')}>How we rank <Icon name="arrow" size={14} /></button></div>
               <div className="preference-note"><span className="preference-icon"><Icon name="spark" size={16} /></span><span>Ranking against your saved preferences</span><span className="preference-value">{preferences.airline} · {preferences.seat.toLowerCase()} · max {preferences.maxDelta} change</span><button onClick={() => setPreferencesOpen(true)}>Edit</button></div>
-              <div className="alternatives-grid">{rankedAlternatives.map((option) => <AlternativeCard key={option.id} option={option} selected={option.id === selected.id} onSelect={() => selectAlternative(option)} />)}</div>
+              <div className="alternatives-grid">{displayAlternatives.map((option) => <AlternativeCard key={option.id} option={option} selected={option.id === selected.id} onSelect={() => selectAlternative(option)} />)}</div>
             </section>
 
             <section className={`plan-card panel plan-card--${stage}`}>
               <div className="plan-header"><div><div className="eyebrow-row"><span className="eyebrow">COORDINATED RESCUE PLAN</span><span className="mono muted">{backendPlan ? `VERSION ${String(backendPlan.version || 1).padStart(2, '0')} · HASH ${String(backendPlan.plan_hash || '').slice(0, 4).toUpperCase()}…${String(backendPlan.plan_hash || '').slice(-4).toUpperCase()}` : 'PENDING PROPOSAL · SERVER HASH BOUND'}</span></div><h2>{stage === 'review' ? 'Ready for your say.' : stage === 'executing' ? 'Your plan is in motion.' : stage === 'recovered' ? 'Your trip is back on track.' : 'One step needs your attention.'}</h2><p>{stage === 'review' ? 'Review every change before anything is booked, moved or sent.' : stage === 'executing' ? 'We are running each step as a transaction. You will see the result of every action.' : stage === 'recovered' ? 'All recovery actions confirmed by backend. Notification draft ready.' : (backendResult?.message || 'The ride failed. Other steps were compensated. The message was not sent.')}</p></div><StatusChip tone={stageTone} dot>{stageLabel}</StatusChip></div>
               <div className="plan-items">
-                <div className="plan-item"><span className="plan-icon plan-icon--plane"><Icon name="plane" size={17} /></span><span className="plan-item-copy"><strong>Switch flight to {selected.flight}</strong><small>{selected.airline} · {selected.departure} departure · {selected.seat}</small></span><span className="plan-item-state">{stage === 'review' ? 'PROPOSED' : stage === 'recovered' ? 'UPDATED' : 'COMPENSATED'}<small>{selected.delta > 0 ? `+$${selected.delta}` : `-$${Math.abs(selected.delta)}`}</small></span></div>
-                <div className="plan-item"><span className="plan-icon plan-icon--hotel"><Icon name="hotel" size={17} /></span><span className="plan-item-copy"><strong>Move hotel check-in to 12:00</strong><small>{trip.hotel} · no rate change · room held</small></span><span className="plan-item-state plan-item-state--safe">{stage === 'partial_failure' ? 'COMPENSATED' : 'HELD'}<small>$0</small></span></div>
-                <div className="plan-item"><span className="plan-icon plan-icon--car"><Icon name="car" size={17} /></span><span className="plan-item-copy"><strong>Reschedule airport ride</strong><small>{trip.ride} · {stage === 'partial_failure' ? 'Simulated provider failure' : 'pickup updated to 11:35'}</small></span><span className={`plan-item-state${stage === 'partial_failure' ? ' plan-item-state--warning' : ''}`}>{stage === 'partial_failure' ? 'FAILED' : 'READY'}<small>{stage === 'partial_failure' ? 'Failure caught' : '+$18'}</small></span></div>
-                <div className="plan-item"><span className="plan-icon plan-icon--message"><Icon name="message" size={17} /></span><span className="plan-item-copy"><strong>{notificationSent ? 'Message sent to Sam' : 'Draft message to Sam'}</strong><small>“Landing at 11:05 now—ride is moved. See you soon.”</small></span><span className={`plan-item-state ${notificationSent ? 'plan-item-state--safe' : stage === 'partial_failure' ? 'plan-item-state--warning' : 'plan-item-state--safe'}`}>{notificationSent ? 'DELIVERED' : stage === 'partial_failure' ? 'NOT SENT' : 'DRAFT READY'}<small>{notificationSent ? 'Sent to Sam' : stage === 'partial_failure' ? 'Discarded' : 'Requires approval'}</small></span></div>
+                {backendPlan?.actions?.length ? backendPlan.actions.map((a: any, i: number) => (
+                  <div className="plan-item" key={i}>
+                    <span className={`plan-icon plan-icon--${a.type?.includes('hotel') ? 'hotel' : a.type?.includes('ride') ? 'car' : a.type?.includes('message') || a.type?.includes('notification') ? 'message' : 'plane'}`}>
+                      <Icon name={a.type?.includes('hotel') ? 'hotel' : a.type?.includes('ride') ? 'car' : a.type?.includes('message') || a.type?.includes('notification') ? 'message' : 'plane'} size={17} />
+                    </span>
+                    <span className="plan-item-copy">
+                      <strong>{a.type?.replace(/_/g, ' ')}{a.flight_number ? `: ${a.flight_number}` : ''}{a.target ? ` → ${a.target}` : ''}</strong>
+                      <small>{a.reason || a.body || a.proposed_check_in || a.proposed_pickup || a.airline || 'Simulated provider action'}</small>
+                    </span>
+                    <span className={`plan-item-state ${backendResult?.steps?.[i]?.status === 'failed' || backendResult?.steps?.[i]?.status === 'interrupted' ? 'plan-item-state--warning' : backendResult?.steps?.[i]?.status === 'success' || backendResult?.steps?.[i]?.status === 'succeeded' ? 'plan-item-state--safe' : ''}`}>
+                      {(backendResult?.steps?.[i]?.status || (stage === 'review' || stage === 'proposed' ? 'PROPOSED' : stage === 'approved' ? 'APPROVED' : 'PENDING')).toString().toUpperCase()}
+                      <small>{a.cost_delta != null ? `+$${a.cost_delta}` : ''}</small>
+                    </span>
+                  </div>
+                )) : (
+                  <div className="plan-item">
+                    <span className="plan-icon plan-icon--plane"><Icon name="plane" size={17} /></span>
+                    <span className="plan-item-copy"><strong>No plan proposed yet</strong><small>Select an alternative and propose a plan. Server actions appear here.</small></span>
+                    <span className="plan-item-state">—</span>
+                  </div>
+                )}
               </div>
               <div className="plan-total"><span><span className="eyebrow">TOTAL COST CHANGE</span><strong>{backendPlan ? `+$${backendPlan.total_cost_delta}` : '—'}</strong><small>{backendPlan ? `plan ${backendPlan.plan_id} · hash ${String(backendPlan.plan_hash).slice(0, 12)}… · simulated providers` : 'Cost appears after server proposes the plan'}</small></span><span className="plan-lock"><Icon name="lock" size={15} />Approval is bound to the exact server plan hash</span></div>
               <div className="plan-actions">
                 {backendError && <p className="plan-disclaimer" style={{color:'#b45041'}}><Icon name="close" size={15} />{backendError}</p>}
                 {backendResult && <p className="plan-disclaimer">Last execution: <strong>{backendResult.status}</strong>{backendResult.message ? ` — ${backendResult.message}` : ''} (providers: simulated)</p>}
-                {stage === 'review' && <button className="primary-button" onClick={() => executePlan('recovered')}><Icon name="shield" size={17} />Propose, approve &amp; execute <span>→</span></button>}
+                {stage === 'review' && <button className="primary-button" onClick={() => proposePlan()}><Icon name="shield" size={17} />Propose plan only <span>→</span></button>}
                 {stage === 'executing' && <button className="primary-button primary-button--busy" disabled><span className="button-spinner" />Executing safely…</button>}
                 {stage === 'recovered' && <button className="primary-button primary-button--success" onClick={resetDemo}><Icon name="refresh" size={17} />Run demo again</button>}
                 {stage === 'recovered' && notificationDraft && !notificationSent && <button className="secondary-button" onClick={sendNotificationAction} disabled={sendingNotif}><Icon name="message" size={15} />{sendingNotif ? 'Sending…' : 'Approve & send notification'}</button>}
                 {stage === 'partial_failure' && <button className="primary-button primary-button--warning" onClick={resetDemo}><Icon name="refresh" size={17} />Review recovery again</button>}
-                {stage === 'review' && <button className="secondary-button" onClick={() => executePlan('partial_failure')}><Icon name="terminal" size={15} />Run failure path</button>}
+                {(stage === 'proposed') && <button className="primary-button" onClick={() => approvePlan()} disabled={isBusy}><Icon name="shield" size={17} />Approve exact plan hash</button>}
+                {(stage === 'approved') && <button className="primary-button" onClick={() => executeApprovedPlan()} disabled={isBusy}><Icon name="check" size={17} />Execute approved plan</button>}
+                {(stage === 'approved') && <button className="secondary-button" onClick={() => executeApprovedPlan('reschedule_ride')} disabled={isBusy}><Icon name="terminal" size={15} />Execute failure path</button>}
+                {stage === 'uncertain' && <button className="primary-button primary-button--warning" onClick={resetDemo}><Icon name="refresh" size={17} />Reset UI</button>}
+                {stage === 'review' && <button className="secondary-button" style={{display:'none'}} onClick={() => executeApprovedPlan('reschedule_ride')}><Icon name="terminal" size={15} />Run failure path</button>}
                 {(stage === 'recovered' || stage === 'partial_failure') && <button className="secondary-button" onClick={() => setRawCallsOpen(true)}><Icon name="audit" size={15} />View audit trail</button>}
               </div>
               <div className="plan-disclaimer"><Icon name="shield" size={14} />No bookings or messages are sent until you approve. Server cryptographic hash protects against tampering.</div>

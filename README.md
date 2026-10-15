@@ -29,6 +29,16 @@ It calls the same domain tools registered on the MCP server via an HTTP facade.
 
 Judges should evaluate agent tool use, approval safety, and failure handling in the simulator.
 
+## Explicit approval workflow
+
+1. **Propose** — server builds a plan (no approval, no side effects).
+2. **Approve** — user confirms the exact `plan_hash` returned by the server.
+3. **Execute** — only after a valid unexpired unconsumed approval.
+
+Notification send uses a separate hash-bound approval and atomic send reservation.
+
+Demo identity is **single-user** (`user-alex`). Client-supplied `user_id` is not treated as authentication on the HTTP facade.
+
 ## Data safety
 
 - Schema init does **not** wipe data.

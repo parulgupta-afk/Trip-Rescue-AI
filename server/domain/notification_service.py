@@ -288,11 +288,12 @@ def send_notifications(
 
         send_id = _id()
         try:
+            now = _now_iso()
             conn.execute(
                 """INSERT INTO notification_sends
-                   (id, plan_id, draft_id, content_hash, result_json, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, 'sending', ?)""",
-                (send_id, plan_id, draft["id"], content_hash, "[]", _now_iso()),
+                   (id, plan_id, draft_id, content_hash, result_json, status, created_at, claimed_at)
+                   VALUES (?, ?, ?, ?, ?, 'sending', ?, ?)""",
+                (send_id, plan_id, draft["id"], content_hash, "[]", now, now),
             )
         except sqlite3.IntegrityError:
             # Lost the race — another worker reserved this (plan, hash)
@@ -379,5 +380,81 @@ def send_notifications(
         "sent": sent,
         "status": "sent",
         "message": f"Sent {len(sent)} notification(s) via simulated mock provider.",
+        "provider": "simulated",
+    }
+
+
+
+STALE_SEND_SECONDS = 120
+
+
+def reconcile_stale_notification_send(
+    plan_id: str,
+    content_hash: str,
+    user_id: str = "user-alex",
+    stale_after_seconds: int = STALE_SEND_SECONDS,
+) -> dict[str, Any]:
+    """Mark a stale 'sending' reservation as uncertain. Never redispatches provider."""
+    plan = repo.get_plan(plan_id)
+    if not plan:
+        return {"ok": False, "error": "PLAN_NOT_FOUND"}
+    if plan["user_id"] != user_id:
+        return {"ok": False, "error": "OWNERSHIP"}
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM notification_sends WHERE plan_id = ? AND content_hash = ?",
+            (plan_id, content_hash),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": "NO_SEND", "message": "No send reservation found"}
+        es = dict(row)
+        if es["status"] == "sent":
+            return {"ok": True, "idempotent": True, "status": "sent", "message": "Already sent"}
+        if es["status"] == "uncertain":
+            return {
+                "ok": False,
+                "error": "SEND_UNCERTAIN",
+                "status": "uncertain",
+                "message": "Already uncertain; provider will not be retried automatically.",
+            }
+        if es["status"] != "sending":
+            return {"ok": False, "error": "SEND_STATE", "status": es["status"]}
+
+        claimed = es.get("claimed_at") or es.get("created_at")
+        try:
+            claimed_dt = datetime.fromisoformat(claimed) if claimed else None
+        except ValueError:
+            claimed_dt = None
+        if claimed_dt is None or (_now() - claimed_dt).total_seconds() < stale_after_seconds:
+            return {
+                "ok": False,
+                "error": "SEND_IN_PROGRESS",
+                "status": "sending",
+                "message": "Reservation still within lease; not reconciled.",
+            }
+
+        cur = conn.execute(
+            """UPDATE notification_sends
+               SET status = 'uncertain', result_json = ?
+               WHERE id = ? AND status = 'sending'""",
+            (json.dumps({"reconciled": True, "reason": "stale_lease"}), es["id"]),
+        )
+        if cur.rowcount != 1:
+            return {
+                "ok": False,
+                "error": "CLAIM_FAILED",
+                "message": "Could not reconcile; status may have changed concurrently.",
+            }
+        conn.execute(
+            "UPDATE notification_drafts SET status = 'uncertain' WHERE id = ?",
+            (es["draft_id"],),
+        )
+
+    return {
+        "ok": True,
+        "plan_id": plan_id,
+        "status": "uncertain",
+        "message": "Stale sending reservation marked uncertain. Provider was not redispatched.",
         "provider": "simulated",
     }
