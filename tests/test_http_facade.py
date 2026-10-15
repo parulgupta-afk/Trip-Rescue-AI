@@ -55,3 +55,51 @@ def test_plan_status_ok_for_owner():
     r = client.post("/tools/get_plan_status", json={"plan_id": plan["plan_id"]})
     assert r.status_code == 200
     assert r.json().get("plan_id") == plan["plan_id"]
+
+
+def test_reconcile_missing_content_hash_422():
+    r = client.post("/tools/reconcile_stale_notification_send", json={"plan_id": "PLAN-1"})
+    assert r.status_code == 422
+    assert r.json().get("error") == "VALIDATION"
+
+
+def test_reconcile_negative_or_zero_stale_seconds_422():
+    r_neg = client.post("/tools/reconcile_stale_notification_send", json={"plan_id": "PLAN-1", "content_hash": "abc", "stale_after_seconds": -5})
+    assert r_neg.status_code == 422
+    assert r_neg.json().get("error") == "VALIDATION"
+
+    r_zero = client.post("/tools/reconcile_stale_notification_send", json={"plan_id": "PLAN-1", "content_hash": "abc", "stale_after_seconds": 0})
+    assert r_zero.status_code == 422
+    assert r_zero.json().get("error") == "VALIDATION"
+
+
+def test_recover_negative_stale_seconds_422():
+    r = client.post("/tools/recover_stuck_execution", json={"plan_id": "PLAN-1", "stale_after_seconds": -1})
+    assert r.status_code == 422
+    assert r.json().get("error") == "VALIDATION"
+
+
+def test_missing_trip_returns_404():
+    r = client.post("/tools/get_trip", json={"trip_id": "TRIP-NONEXISTENT"})
+    assert r.status_code == 404
+    assert r.json().get("error") == "TRIP_NOT_FOUND"
+
+
+def test_missing_plan_returns_404():
+    r = client.post("/tools/get_plan_status", json={"plan_id": "PLAN-NONEXISTENT"})
+    assert r.status_code == 404
+    assert r.json().get("error") == "PLAN_NOT_FOUND"
+
+
+def test_client_supplied_user_id_cannot_bypass_demo_user():
+    # Attempting to query with a fake user_id still evaluates with DEMO_USER
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    r = client.post(
+        "/tools/get_plan_status",
+        json={"plan_id": plan["plan_id"], "user_id": "malicious-user"},
+    )
+    # The server overrides user_id with DEMO_USER ('user-alex')
+    assert r.status_code == 200
+    assert r.json().get("plan_id") == plan["plan_id"]
+
+

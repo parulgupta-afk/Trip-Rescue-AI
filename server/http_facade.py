@@ -48,10 +48,14 @@ class ToolArgs(BaseModel):
 
 
 def _error_http_status(error: str | None) -> int:
+    err = error or ""
+    if "not found" in err.lower() or err.endswith("_NOT_FOUND"):
+        return 404
     mapping = {
         "UNKNOWN_TOOL": 404,
         "VALIDATION": 422,
         "PLAN_NOT_FOUND": 404,
+        "TRIP_NOT_FOUND": 404,
         "NO_DRAFT": 404,
         "NO_SEND": 404,
         "NOT_APPROVED": 403,
@@ -67,9 +71,13 @@ def _error_http_status(error: str | None) -> int:
         "SEND_UNCERTAIN": 409,
         "SEND_STATE": 409,
         "CLAIM_FAILED": 409,
+        "OWNERSHIP_LOST": 409,
+        "EXECUTION_ACTIVE": 409,
+        "CANNOT_ESTABLISH_STALENESS": 409,
+        "INVALID_ARGUMENT": 422,
         "INTERNAL": 500,
     }
-    return mapping.get(error or "", 400)
+    return mapping.get(err, 400)
 
 
 @app.get("/health")
@@ -87,6 +95,19 @@ def health():
 def invoke_tool(tool_name: str, body: ToolArgs | None = None):
     body = body or ToolArgs()
     args = body.model_dump(exclude_none=True)
+
+    # Validate stale_after_seconds if provided
+    if "stale_after_seconds" in args and args["stale_after_seconds"] is not None:
+        if not isinstance(args["stale_after_seconds"], int) or args["stale_after_seconds"] < 0:
+            return JSONResponse(
+                status_code=422,
+                content={"ok": False, "error": "VALIDATION", "message": "stale_after_seconds must be a non-negative integer"},
+            )
+        if tool_name == "reconcile_stale_notification_send" and args["stale_after_seconds"] == 0:
+            return JSONResponse(
+                status_code=422,
+                content={"ok": False, "error": "VALIDATION", "message": "stale_after_seconds must be greater than zero for notification reconciliation"},
+            )
 
     # Ignore client-supplied user_id for authorization; demo identity is server-side
     user_id = DEMO_USER
@@ -114,7 +135,7 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
         ),
         "get_plan_status": lambda: trip_tools.get_plan_status(args["plan_id"], user_id),
         "recover_stuck_execution": lambda: trip_tools.recover_stuck_execution(
-            args["plan_id"], user_id
+            args["plan_id"], user_id, args.get("stale_after_seconds") if args.get("stale_after_seconds") is not None else 120
         ),
         "draft_notifications": lambda: trip_tools.draft_notifications(args["plan_id"], user_id),
         "approve_notifications": lambda: trip_tools.approve_notifications(
@@ -167,6 +188,13 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
                     status_code=422,
                     content={"ok": False, "error": "VALIDATION", "message": f"Missing required field: {field}"},
                 )
+
+    if tool_name == "reconcile_stale_notification_send":
+        if not args.get("content_hash") and not args.get("draft_hash"):
+            return JSONResponse(
+                status_code=422,
+                content={"ok": False, "error": "VALIDATION", "message": "Missing required field: content_hash or draft_hash"},
+            )
 
     try:
         result = dispatch[tool_name]()

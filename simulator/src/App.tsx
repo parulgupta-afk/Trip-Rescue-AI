@@ -127,6 +127,15 @@ const emptyPreferences = {
   notifications: 'Draft messages, never send without approval',
 }
 
+const formatTime = (ts: string | null | undefined): string => {
+  if (!ts) return '—'
+  if (ts.includes('T')) {
+    const timePart = ts.split('T')[1]
+    return timePart.slice(0, 5)
+  }
+  return ts
+}
+
 function App() {
   const [stage, setStage] = useState<DemoStage>('review')
   const [selectedId, setSelectedId] = useState('sas')
@@ -139,6 +148,9 @@ function App() {
   const [backendResult, setBackendResult] = useState<any>(null)
   const [notificationDraft, setNotificationDraft] = useState<any>(null)
   const [notificationSent, setNotificationSent] = useState(false)
+  const [notificationStatus, setNotificationStatus] = useState<
+    'idle' | 'drafted' | 'approved' | 'sending' | 'sent' | 'uncertain' | 'failed'
+  >('idle')
   const [sendingNotif, setSendingNotif] = useState(false)
   const [toolLog, setToolLog] = useState<string[]>([])
   const [backendError, setBackendError] = useState<string | null>(null)
@@ -209,30 +221,37 @@ function App() {
 
   const displayAlternatives = useMemo(() => {
     if (liveAlternatives.length) {
-      return liveAlternatives.map((a: any) => ({
+      const accents = ['#f6b73c', '#3f5bf6', '#2d9c8a']
+      const origCode = liveTrip?.segments?.[0]?.origin || 'DEL'
+      const destCode = liveTrip?.segments?.slice(-1)[0]?.destination || 'JFK'
+      return liveAlternatives.map((a: any, idx: number) => ({
         id: a.id,
         airline: a.airline,
         code: (a.airline || '').slice(0, 2).toUpperCase(),
         flight: a.flight_number,
-        route: liveTrip?.segments ? `${liveTrip.segments[0]?.origin || ''} → ${liveTrip.segments.slice(-1)[0]?.destination || ''}` : '—',
-        departure: a.departure,
-        arrival: a.arrival,
-        duration: a.overnight ? 'overnight' : 'day',
-        stops: 'see plan',
-        seat: a.seat_available || '—',
-        price: `+$${a.extra_cost}`,
+        route: `${origCode} → ${destCode}`,
+        departure: formatTime(a.departure),
+        arrival: formatTime(a.arrival),
+        duration: a.overnight ? 'overnight' : 'day flight',
+        stops: 'Direct / 1-stop',
+        seat: a.seat_available ? `${a.seat_available} seat` : 'assigned',
+        price: a.extra_cost === 0 ? '$0' : `+$${a.extra_cost}`,
         delta: a.extra_cost,
-        fit: a.why || '',
-        tags: a.overnight ? ['OVERNIGHT'] : ['DAY'],
-        accent: '#f6b73c',
+        fit: a.why || (a.extra_cost === 0 ? 'No extra cost' : 'Alternative option'),
+        tags: [
+          ...(a.overnight ? ['OVERNIGHT'] : ['DAY']),
+          ...(a.extra_cost === 0 ? ['INCLUDED'] : a.extra_cost <= 1500 ? ['BUDGET'] : ['PREMIUM']),
+          ...(a.seat_available ? [`${a.seat_available.toUpperCase()} SEAT`] : []),
+        ],
+        accent: accents[idx % accents.length],
       }))
     }
     return rankedAlternativesStatic
   }, [liveAlternatives, liveTrip, rankedAlternativesStatic])
 
   const selected = useMemo(
-    () => displayAlternatives.find((option: any) => option.id === selectedFlightId) ?? displayAlternatives[0] ?? alternatives[0],
-    [displayAlternatives, selectedFlightId],
+    () => displayAlternatives.find((option: any) => option.id === selectedFlightId || option.id === selectedId) ?? displayAlternatives[0] ?? alternatives[0],
+    [displayAlternatives, selectedFlightId, selectedId],
   )
   const isBusy = stage === 'executing' || prefsLoading
 
@@ -250,9 +269,11 @@ function App() {
     window.setTimeout(() => setToast(''), 3600)
   }
 
-  const selectAlternative = (option: Alternative) => {
+  const selectAlternative = (option: any) => {
     if (isBusy) return
-    setSelectedId(option.id); setSelectedFlightId(option.id)
+    const targetFlightId = FLIGHT_MAP[option.id] || option.id
+    setSelectedId(option.id)
+    setSelectedFlightId(targetFlightId)
     if (stage !== 'review') setStage('review')
     announce(`${option.airline} ${option.flight} is now the active rescue option.`)
   }
@@ -366,6 +387,7 @@ function App() {
       const draft = await mcp.draftNotifications(backendPlan.plan_id)
       if (draft.error || draft.ok === false) throw new Error(draft.message || draft.error || 'Draft failed')
       setNotificationDraft(draft)
+      setNotificationStatus('drafted')
       announce('Notification draft loaded from server. Review the body before approving.')
     } catch (e: any) {
       announce(`Draft failed: ${e?.message || 'error'}`)
@@ -381,6 +403,7 @@ function App() {
       const ap = await mcp.approveNotifications(backendPlan.plan_id, notificationDraft.content_hash)
       if (!ap.ok) throw new Error(ap.message || ap.error || 'Approval failed')
       setNotificationDraft({ ...notificationDraft, approved: true, approval: ap })
+      setNotificationStatus('approved')
       announce('Notification draft approved on server. Sending still requires a separate step.')
     } catch (e: any) {
       announce(`Notification approval failed: ${e?.message || 'error'}`)
@@ -396,13 +419,28 @@ function App() {
       return
     }
     setSendingNotif(true)
+    setNotificationStatus('sending')
     try {
       const sent = await mcp.sendNotifications(backendPlan.plan_id, notificationDraft.content_hash)
-      if (!sent.ok) throw new Error(sent.message || sent.error || 'Send failed')
-      setNotificationSent(true)
-      announce('Notification send confirmed by server (simulated provider).')
+      if (sent.status === 'uncertain') {
+        setNotificationStatus('uncertain')
+        announce('Notification outcome uncertain — delivery not confirmed. Reconciliation required.')
+      } else if (!sent.ok || sent.status === 'failed') {
+        setNotificationStatus('failed')
+        throw new Error(sent.message || sent.error || 'Send failed')
+      } else {
+        setNotificationSent(true)
+        setNotificationStatus('sent')
+        announce('Notification send confirmed by server (simulated provider).')
+      }
     } catch (e: any) {
-      announce(`Send failed: ${e?.message || 'error'}. Do not assume delivery.`)
+      const msg = e?.message || 'error'
+      if (msg.includes('uncertain')) {
+        setNotificationStatus('uncertain')
+      } else {
+        setNotificationStatus('failed')
+      }
+      announce(`Send failed: ${msg}. Do not assume delivery or redispatch.`)
     } finally {
       setSendingNotif(false)
     }
@@ -413,9 +451,11 @@ function App() {
     setRawCallsOpen(false)
     setNotificationSent(false)
     setNotificationDraft(null)
+    setNotificationStatus('idle')
     setBackendResult(null)
     setBackendPlan(null)
     setBackendError(null)
+    setApprovalInfo(null)
     announce('UI reset to review. Backend plan history is unchanged.')
   }
 
@@ -482,27 +522,57 @@ function App() {
   }
 
   const activityEvents = useMemo(() => {
+    const origCode = liveTrip?.segments?.[0]?.origin || 'DEL'
+    const destCode = liveTrip?.segments?.slice(-1)[0]?.destination || 'JFK'
     const events: ToolEvent[] = [
-      { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'ILLUSTRATIVE design row — not live backend data' },
-      { id: 'impact', time: '14:32:09', tier: 'read', name: 'get_trip_impact', detail: 'Connection, hotel check-in, ride at risk' },
-      { id: 'rank', time: '14:32:11', tier: 'propose', name: 'rank_alternatives', detail: 'Scoring alternative flights against preferences' },
+      {
+        id: 'status',
+        time: liveDisruption?.original_departure ? formatTime(liveDisruption.original_departure) : '18:00',
+        tier: 'read',
+        name: 'check_flight_status',
+        detail: liveDisruption?.disrupted
+          ? `${liveDisruption.flight_number} delayed ${liveDisruption.delay_hours}h · ${liveDisruption.affected?.length || 0} downstream items at risk (simulated)`
+          : liveTrip
+            ? `Itinerary loaded for ${liveTrip.id} (${origCode} → ${destCode})`
+            : 'Illustrative scenario row (demo fallback)',
+      },
+      {
+        id: 'impact',
+        time: '18:01',
+        tier: 'read',
+        name: 'get_trip_impact',
+        detail: liveDisruption?.affected?.length
+          ? `${liveDisruption.affected.map((a: any) => a.type === 'hotel' ? 'Hotel check-in' : a.type === 'ride' ? 'Airport ride' : a.type === 'connection' ? 'Connection' : a.type).join(', ')} require schedule realignment`
+          : 'Connection, hotel check-in, ride at risk',
+      },
+      {
+        id: 'rank',
+        time: '18:02',
+        tier: 'propose',
+        name: 'search_alternatives',
+        detail: liveAlternatives.length
+          ? `${liveAlternatives.length} alternative flights ranked against traveller preferences`
+          : 'Scoring alternative flights against preferences',
+      },
       {
         id: 'plan',
-        time: backendPlan ? 'active' : '14:32:13',
+        time: backendPlan ? 'active' : 'waiting',
         tier: 'propose',
-        name: 'build_rescue_plan',
+        name: 'propose_rescue_plan',
         detail: backendPlan
           ? `Plan v${backendPlan.version || 1} · hash ${String(backendPlan.plan_hash || '').slice(0, 8)}… (server proposal)`
           : 'Awaiting server plan proposal',
       },
       {
         id: 'approval',
-        time: stage === 'review' ? 'waiting' : 'approved',
+        time: (stage === 'review' || stage === 'proposed') ? 'waiting' : 'approved',
         tier: 'commit',
-        name: 'approval_gate',
+        name: 'approve_rescue_plan',
         detail: stage === 'review'
-          ? 'Explicit traveller approval required'
-          : 'Approved by user-alex · hash verified',
+          ? 'Explicit traveller approval required before execution'
+          : stage === 'proposed'
+            ? 'Plan proposed on server — awaiting explicit approval'
+            : `Approved by user-alex · hash ${String(backendPlan?.plan_hash || '').slice(0, 8)}… verified`,
       },
     ]
 
@@ -512,23 +582,23 @@ function App() {
         time: 'running',
         tier: 'commit',
         name: 'execute_rescue_plan',
-        detail: 'Transaction in progress on backend…',
+        detail: 'Transaction in progress on backend with active lease renewal…',
       })
     } else if (backendResult?.steps) {
       backendResult.steps.forEach((step: any, idx: number) => {
-        const isFailed = step.status === 'failed'
+        const isFailed = step.status === 'failed' || step.status === 'interrupted' || step.status === 'uncertain'
         let detail = ''
         if (step.type === 'change_flight') {
           detail = isFailed
-            ? `Flight change failed: ${step.message || 'error'}`
+            ? `Flight change ${step.status}: ${step.message || 'error'}`
             : `${step.airline || 'Flight'} ${step.flight_number || ''} confirmed · Ref: ${step.booking_reference || 'MOCK-REF'}`
         } else if (step.type === 'reschedule_hotel') {
           detail = isFailed
-            ? `Hotel reschedule failed: ${step.message || 'error'}`
+            ? `Hotel reschedule ${step.status}: ${step.message || 'error'}`
             : `Hotel check-in updated · ${step.proposed_check_in || 'confirmed'}`
         } else if (step.type === 'reschedule_ride') {
           detail = isFailed
-            ? `Ride failed: ${step.message || 'Simulated provider failure'}`
+            ? `Ride ${step.status}: ${step.message || 'Simulated provider failure'}`
             : `Airport ride rescheduled · ${step.pickup_time || 'confirmed'}`
         } else if (step.type === 'draft_notification') {
           detail = `Notification draft prepared for ${step.recipient || 'contact'}`
@@ -557,29 +627,80 @@ function App() {
       }
     }
 
+    if (notificationDraft) {
+      events.push({
+        id: 'notif-draft',
+        time: 'drafted',
+        tier: 'read',
+        name: 'draft_notifications',
+        detail: `Draft prepared for ${(notificationDraft.drafts || [])[0]?.recipient || 'contact'} · hash ${String(notificationDraft.content_hash || '').slice(0, 8)}…`,
+      })
+    }
+
+    if (notificationDraft?.approved) {
+      events.push({
+        id: 'notif-approval',
+        time: 'approved',
+        tier: 'commit',
+        name: 'approve_notifications',
+        detail: 'Notification approved on server by user-alex',
+      })
+    }
+
     if (notificationSent) {
       events.push({
-        id: 'message-sent',
+        id: 'notif-sent',
         time: 'sent',
         tier: 'commit',
         name: 'send_notifications',
-        detail: 'Delivered via simulated provider (mock dispatch)',
+        detail: 'Delivered via simulated provider (mock dispatch confirmed)',
+      })
+    } else if (notificationStatus === 'uncertain') {
+      events.push({
+        id: 'notif-uncertain',
+        time: 'uncertain',
+        tier: 'commit',
+        name: 'send_notifications',
+        detail: 'Delivery outcome uncertain — reservation pending reconciliation',
+      })
+    } else if (notificationStatus === 'failed') {
+      events.push({
+        id: 'notif-failed',
+        time: 'failed',
+        tier: 'commit',
+        name: 'send_notifications',
+        detail: 'Dispatch failed — not redispatched without review',
       })
     }
-    return events
-  }, [stage, backendResult, backendPlan, notificationSent])
 
-  const eventState = (eventId: string) => {
-    if (eventId === 'approval') return stage === 'review' ? 'waiting' : 'done'
-    if (eventId === 'execute') return 'running'
+    return events
+  }, [stage, backendResult, backendPlan, notificationDraft, notificationSent, notificationStatus, liveDisruption, liveTrip, liveAlternatives])
+
+  const eventState = (eventId: string): 'done' | 'running' | 'waiting' | 'warning' => {
+    if (eventId === 'approval') {
+      if (stage === 'review' || stage === 'proposed') return 'waiting'
+      return 'done'
+    }
+    if (eventId === 'execute') return stage === 'executing' ? 'running' : 'done'
     if (eventId.startsWith('step-')) {
       const idx = parseInt(eventId.replace('step-', ''), 10)
       const step = backendResult?.steps?.[idx]
-      return step?.status === 'failed' ? 'warning' : 'done'
+      if (!step) return stage === 'executing' ? 'running' : 'waiting'
+      if (step.status === 'failed' || step.status === 'interrupted' || step.status === 'uncertain') return 'warning'
+      if (step.status === 'running' || step.status === 'executing') return 'running'
+      if (step.status === 'success' || step.status === 'succeeded') return 'done'
+      return 'waiting'
     }
     if (eventId.startsWith('comp-')) return 'warning'
-    if (eventId === 'message-sent') return 'done'
-    if (stage === 'review' && eventId === 'plan') return backendPlan ? 'done' : 'waiting'
+    if (eventId === 'notif-draft') return 'done'
+    if (eventId === 'notif-approval') return 'done'
+    if (eventId === 'notif-sent') return 'done'
+    if (eventId === 'notif-uncertain') return 'warning'
+    if (eventId === 'notif-failed') return 'warning'
+    if (eventId === 'plan') {
+      if (backendPlan) return 'done'
+      return stage === 'review' ? 'waiting' : 'running'
+    }
     return 'done'
   }
 
@@ -594,14 +715,21 @@ function App() {
     : 'UNKNOWN'
   const stageTone = stage === 'recovered' ? 'teal' : (stage === 'partial_failure' || stage === 'uncertain') ? 'coral' : (stage === 'executing' || stage === 'proposed' || stage === 'approved') ? 'blue' : 'amber'
 
+  const firstSeg = liveTrip?.segments?.[0]
+  const lastSeg = liveTrip?.segments?.slice(-1)[0]
+  const hotelBooking = liveTrip?.bookings?.find((b: any) => b.kind === 'hotel')
+  const rideBooking = liveTrip?.bookings?.find((b: any) => b.kind === 'ride')
+  const hotelName = hotelBooking?.details?.name || 'Manhattan View Hotel'
+  const rideDriver = rideBooking?.details?.driver || 'Sam'
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-header"><BrandMark /></div>
         <div className="trip-context">
-          <span className="eyebrow">ACTIVE TRIP / 004</span>
-          <strong>{trip.origin} <span>→</span> {trip.destination}</strong>
-          <span className="mono muted">{trip.date} · {trip.code}</span>
+          <span className="eyebrow">{liveTrip ? `ACTIVE TRIP / ${liveTrip.id}` : 'DEMO FALLBACK TRIP'}</span>
+          <strong>{firstSeg?.origin || trip.origin} <span>→</span> {lastSeg?.destination || trip.destination}</strong>
+          <span className="mono muted">{liveTrip ? '20–24 OCT 2026 · ' + liveTrip.id : `${trip.date} · ${trip.code} (DEMO)`}</span>
         </div>
         <nav className="primary-nav" aria-label="Primary navigation">
           <button className="nav-item nav-item--active"><span><Icon name="pulse" size={17} /><span className="nav-label">Rescue plan</span></span><span className="nav-count">1</span></button>
@@ -618,7 +746,7 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="mobile-brand"><BrandMark compact /></div>
-          <div className="breadcrumbs"><span>TRIPS</span><Icon name="chevron" size={12} /><strong>{liveTrip?.id || 'TRIP-100'}</strong><StatusChip tone="blue" dot>DEMO MODE</StatusChip></div>
+          <div className="breadcrumbs"><span>TRIPS</span><Icon name="chevron" size={12} /><strong>{liveTrip?.id || 'TRIP-100'}</strong><StatusChip tone="blue" dot>{liveTrip ? 'MOCK BACKEND' : 'DEMO FALLBACK'}</StatusChip></div>
           <div className="topbar-actions"><span className="sync-state"><span className="sync-dot" />{backendOnline === true ? 'Backend reachable' : backendOnline === false ? 'Backend offline' : 'Checking backend…'}</span><button className="icon-button" aria-label="Open preferences" onClick={() => setPreferencesOpen(true)}><Icon name="sliders" size={18} /></button><button className="avatar avatar--small" onClick={() => setPreferencesOpen(true)}>AR</button></div>
         </header>
 
@@ -626,32 +754,81 @@ function App() {
           <section className="stage-column">
             <section className="hero-section">
               <div className="hero-copy">
-                <div className="eyebrow-row"><span className="eyebrow eyebrow--amber">LIVE DISRUPTION</span><span className="signal-line" aria-hidden="true"><i /><i /><i /><i /><i /></span><span className="mono muted">14:32 LOCAL</span></div>
+                <div className="eyebrow-row"><span className="eyebrow eyebrow--amber">{liveDisruption?.disrupted ? 'SIMULATED DISRUPTION' : 'ITINERARY STATUS'}</span><span className="signal-line" aria-hidden="true"><i /><i /><i /><i /><i /></span><span className="mono muted">{liveTrip ? 'BACKEND SYNCED' : 'DEMO FALLBACK'}</span></div>
                 <h1>Your connection<br /><em>is at risk.</em></h1>
                 <p className="hero-lede">{liveDisruption?.disrupted
-                  ? <>{liveDisruption.flight_number || 'Flight'} delayed by <strong>{liveDisruption.delay_hours ?? '?'}h</strong>. {liveDisruption.message || 'Trip recovery is available.'} <span className="muted">(simulated provider)</span></>
+                  ? <>{liveDisruption.flight_number || 'Flight'} delayed by <strong>{liveDisruption.delay_hours ?? 4}h</strong>. {liveDisruption.message || 'Trip recovery is available.'} <span className="muted">(simulated provider)</span></>
                   : liveTrip
                     ? <>Loaded trip <strong>{liveTrip.id}</strong> from backend. <span className="muted">(simulated)</span></>
-                    : <>Waiting for backend trip data. Static design copy is illustrative only.</>
+                    : <>Waiting for backend trip data. Demo fallback values displayed.</>
                 }</p>
-                <div className="hero-meta"><span><Icon name="clock" size={15} />Detected 14:32</span><span><Icon name="database" size={15} />Live provider check</span><span><Icon name="shield" size={15} />You stay in control</span></div>
+                <div className="hero-meta">
+                  <span><Icon name="clock" size={15} />Detected {liveDisruption?.original_departure ? formatTime(liveDisruption.original_departure) : '18:00'}</span>
+                  <span><Icon name="database" size={15} />Simulated provider check</span>
+                  <span><Icon name="shield" size={15} />You stay in control</span>
+                </div>
               </div>
               <div className="impact-card">
-                <div className="impact-head"><span className="eyebrow">TRIP IMPACT</span><StatusChip tone="coral" dot>3 AT RISK</StatusChip></div>
-                <div className="impact-number">+<span>1</span><small>h</small> 40<small>m</small></div>
+                <div className="impact-head">
+                  <span className="eyebrow">TRIP IMPACT</span>
+                  <StatusChip tone="coral" dot>{liveDisruption?.affected?.length ? `${liveDisruption.affected.length} AT RISK` : '3 AT RISK (FALLBACK)'}</StatusChip>
+                </div>
+                <div className="impact-number">+{liveDisruption?.delay_hours ? <span>{liveDisruption.delay_hours}</span> : <span>4</span>}<small>h</small> 00<small>m</small></div>
                 <p>estimated disruption window</p>
-                <div className="impact-items"><span><i className="impact-icon impact-icon--coral"><Icon name="plane" size={14} /></i>Connection</span><span><i className="impact-icon impact-icon--coral"><Icon name="car" size={14} /></i>Airport ride</span><span><i className="impact-icon impact-icon--coral"><Icon name="message" size={14} /></i>Waiting person</span></div>
+                <div className="impact-items">
+                  {liveDisruption?.affected?.length ? (
+                    liveDisruption.affected.map((aff: any, idx: number) => (
+                      <span key={idx}>
+                        <i className="impact-icon impact-icon--coral">
+                          <Icon name={aff.type === 'hotel' ? 'hotel' : aff.type === 'ride' ? 'car' : aff.type === 'message' ? 'message' : 'plane'} size={14} />
+                        </i>
+                        {aff.type === 'connection' ? 'Connection' : aff.type === 'hotel' ? 'Hotel check-in' : aff.type === 'ride' ? 'Airport ride' : aff.type}
+                      </span>
+                    ))
+                  ) : (
+                    <>
+                      <span><i className="impact-icon impact-icon--coral"><Icon name="plane" size={14} /></i>Connection</span>
+                      <span><i className="impact-icon impact-icon--coral"><Icon name="car" size={14} /></i>Airport ride</span>
+                      <span><i className="impact-icon impact-icon--coral"><Icon name="hotel" size={14} /></i>Hotel check-in</span>
+                    </>
+                  )}
+                </div>
               </div>
             </section>
 
             <section className="route-card panel">
-              <div className="section-heading"><div><span className="eyebrow">YOUR ROUTE</span><h2>One trip. Four moving parts.</h2></div><StatusChip tone="teal" dot>ITINERARY SYNCED</StatusChip></div>
-              <div className="route-strip">
-                <div className="route-stop"><span className="stop-code">{trip.originCode}</span><strong>{trip.origin}</strong><small>{trip.terminal}</small></div>
-                <div className="route-middle"><div className="route-line"><span className="route-line-fill" /><i /><i /><i /></div><div className="route-note"><span className="route-note-line" /><span>CONNECTION AT RISK</span><span className="route-note-line" /></div><div className="route-flight"><Icon name="plane" size={14} />{trip.originalFlight} · {trip.originalTime} <span>→</span> {trip.revisedTime}</div></div>
-                <div className="route-stop route-stop--right"><span className="stop-code">{trip.destinationCode}</span><strong>{trip.destination}</strong><small>{trip.hotel}</small></div>
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">YOUR ROUTE</span>
+                  <h2>One trip. {liveTrip ? 'Four moving parts.' : 'Illustrative fallback.'}</h2>
+                </div>
+                <StatusChip tone="teal" dot>{liveTrip ? 'ITINERARY SYNCED' : 'DEMO FALLBACK'}</StatusChip>
               </div>
-              <div className="route-bottom"><span><i className="legend-dot legend-dot--teal" />CONFIRMED <strong>Flight + hotel</strong></span><span><i className="legend-dot legend-dot--coral" />AT RISK <strong>Connection + ride + message</strong></span><span className="mono">LAST CHECK 14:32:11</span></div>
+              <div className="route-strip">
+                <div className="route-stop">
+                  <span className="stop-code">{firstSeg?.origin || trip.originCode}</span>
+                  <strong>{firstSeg?.origin === 'DEL' ? 'Delhi' : firstSeg?.origin || trip.origin}</strong>
+                  <small>{firstSeg ? `${firstSeg.airline || 'Example Air'} · Seat ${firstSeg.seat || '12A'}` : trip.terminal}</small>
+                </div>
+                <div className="route-middle">
+                  <div className="route-line"><span className="route-line-fill" /><i /><i /><i /></div>
+                  <div className="route-note"><span className="route-note-line" /><span>CONNECTION AT RISK</span><span className="route-note-line" /></div>
+                  <div className="route-flight">
+                    <Icon name="plane" size={14} />
+                    {firstSeg?.flight_number || trip.originalFlight} · {firstSeg?.departure_time ? formatTime(firstSeg.departure_time) : trip.originalTime} <span>→</span> {liveDisruption?.new_estimated_departure ? formatTime(liveDisruption.new_estimated_departure) : trip.revisedTime} (+{liveDisruption?.delay_hours ?? 4}h delay)
+                  </div>
+                </div>
+                <div className="route-stop route-stop--right">
+                  <span className="stop-code">{lastSeg?.destination || trip.destinationCode}</span>
+                  <strong>{lastSeg?.destination === 'JFK' ? 'New York' : lastSeg?.destination || trip.destination}</strong>
+                  <small>{hotelName}</small>
+                </div>
+              </div>
+              <div className="route-bottom">
+                <span><i className="legend-dot legend-dot--teal" />CONFIRMED <strong>{lastSeg?.flight_number ? `Seg 2 (${lastSeg.flight_number})` : 'Flight'} + {hotelName}</strong></span>
+                <span><i className="legend-dot legend-dot--coral" />AT RISK <strong>Layover @ {firstSeg?.destination || 'LHR'} + Ride ({rideDriver})</strong></span>
+                <span className="mono">{liveTrip ? 'BACKEND SYNCED (SIMULATED)' : 'DEMO FALLBACK'}</span>
+              </div>
             </section>
 
             <section className="alternatives-section">
@@ -661,7 +838,54 @@ function App() {
             </section>
 
             <section className={`plan-card panel plan-card--${stage}`}>
-              <div className="plan-header"><div><div className="eyebrow-row"><span className="eyebrow">COORDINATED RESCUE PLAN</span><span className="mono muted">{backendPlan ? `VERSION ${String(backendPlan.version || 1).padStart(2, '0')} · HASH ${String(backendPlan.plan_hash || '').slice(0, 4).toUpperCase()}…${String(backendPlan.plan_hash || '').slice(-4).toUpperCase()}` : 'PENDING PROPOSAL · SERVER HASH BOUND'}</span></div><h2>{stage === 'review' ? 'Ready for your say.' : stage === 'proposed' ? 'Plan proposed — not approved yet.' : stage === 'approved' ? 'Approved — ready to execute.' : stage === 'executing' ? 'Your plan is in motion.' : stage === 'recovered' ? 'Backend confirmed recovery.' : stage === 'uncertain' ? 'Outcome unresolved.' : 'One step needs your attention.'}</h2><p>{stage === 'review' ? 'Review every change before anything is booked, moved or sent.' : stage === 'executing' ? 'We are running each step as a transaction. You will see the result of every action.' : stage === 'recovered' ? 'All recovery actions confirmed by backend. Notification draft ready.' : (backendResult?.message || 'The ride failed. Other steps were compensated. The message was not sent.')}</p></div><StatusChip tone={stageTone} dot>{stageLabel}</StatusChip></div>
+              <div className="plan-header">
+                <div>
+                  <div className="eyebrow-row">
+                    <span className="eyebrow">COORDINATED RESCUE PLAN</span>
+                    <span className="mono muted">
+                      {backendPlan
+                        ? `VERSION ${String(backendPlan.version || 1).padStart(2, '0')} · HASH ${String(backendPlan.plan_hash || '').slice(0, 4).toUpperCase()}…${String(backendPlan.plan_hash || '').slice(-4).toUpperCase()}`
+                        : 'PENDING PROPOSAL · SERVER HASH BOUND'}
+                    </span>
+                  </div>
+                  <h2>
+                    {stage === 'review'
+                      ? 'Ready for your say.'
+                      : stage === 'proposed'
+                        ? 'Plan proposed — awaiting your approval.'
+                        : stage === 'approved'
+                          ? 'Approved — ready to execute.'
+                          : stage === 'executing'
+                            ? 'Your plan is in motion.'
+                            : stage === 'recovered'
+                              ? 'Backend confirmed recovery.'
+                              : stage === 'uncertain'
+                                ? 'Outcome unresolved.'
+                                : 'One step needs your attention.'}
+                  </h2>
+                  <p>
+                    {stage === 'review'
+                      ? 'Review every change before anything is booked, moved or sent.'
+                      : stage === 'proposed'
+                        ? backendPlan
+                          ? `Plan proposed for ${selected.airline} ${selected.flight}. Review the coordinated actions below. Approval is required before execution.`
+                          : 'Plan proposed on server. Review all steps.'
+                        : stage === 'approved'
+                          ? 'Traveller approval confirmed on backend. Execution still requires an explicit commit action.'
+                          : stage === 'executing'
+                            ? 'We are running each step as a transaction with active lease renewal. You will see the result of every action.'
+                            : stage === 'recovered'
+                              ? 'All recovery actions confirmed by backend. Notification draft is ready for review.'
+                              : stage === 'partial_failure'
+                                ? (backendResult?.message || 'One step failed. Compensations were applied to safely roll back confirmed actions.')
+                                : stage === 'uncertain'
+                                  ? (backendError || 'Execution outcome is uncertain. Query server status before re-running.')
+                                  : 'Review recovery steps.'}
+                  </p>
+                </div>
+                <StatusChip tone={stageTone} dot>{stageLabel}</StatusChip>
+              </div>
+
               <div className="plan-items">
                 {backendPlan?.actions?.length ? backendPlan.actions.map((a: any, i: number) => (
                   <div className="plan-item" key={i}>
@@ -672,7 +896,7 @@ function App() {
                       <strong>{a.type?.replace(/_/g, ' ')}{a.flight_number ? `: ${a.flight_number}` : ''}{a.target ? ` → ${a.target}` : ''}</strong>
                       <small>{a.reason || a.body || a.proposed_check_in || a.proposed_pickup || a.airline || 'Simulated provider action'}</small>
                     </span>
-                    <span className={`plan-item-state ${backendResult?.steps?.[i]?.status === 'failed' || backendResult?.steps?.[i]?.status === 'interrupted' ? 'plan-item-state--warning' : backendResult?.steps?.[i]?.status === 'success' || backendResult?.steps?.[i]?.status === 'succeeded' ? 'plan-item-state--safe' : ''}`}>
+                    <span className={`plan-item-state ${backendResult?.steps?.[i]?.status === 'failed' || backendResult?.steps?.[i]?.status === 'interrupted' || backendResult?.steps?.[i]?.status === 'uncertain' ? 'plan-item-state--warning' : backendResult?.steps?.[i]?.status === 'success' || backendResult?.steps?.[i]?.status === 'succeeded' ? 'plan-item-state--safe' : ''}`}>
                       {(backendResult?.steps?.[i]?.status || (stage === 'review' || stage === 'proposed' ? 'PROPOSED' : stage === 'approved' ? 'APPROVED' : 'PENDING')).toString().toUpperCase()}
                       <small>{a.cost_delta != null ? `+$${a.cost_delta}` : ''}</small>
                     </span>
@@ -707,10 +931,20 @@ function App() {
                     <Icon name="shield" size={15} />{sendingNotif ? 'Approving…' : 'Approve notification draft'}
                   </button>
                 )}
-                {stage === 'recovered' && notificationDraft?.approved && !notificationSent && (
+                {stage === 'recovered' && notificationDraft?.approved && !notificationSent && notificationStatus !== 'uncertain' && (
                   <button className="secondary-button" onClick={sendNotificationAction} disabled={sendingNotif}>
                     <Icon name="message" size={15} />{sendingNotif ? 'Sending…' : 'Send approved notification'}
                   </button>
+                )}
+                {stage === 'recovered' && notificationStatus === 'uncertain' && (
+                  <p className="plan-disclaimer" style={{color: '#b45041'}}>
+                    <Icon name="close" size={15} />Notification delivery outcome uncertain. Do not automatically redispatch.
+                  </p>
+                )}
+                {stage === 'recovered' && notificationSent && (
+                  <p className="plan-disclaimer" style={{color: '#2d9c8a'}}>
+                    <Icon name="check" size={15} />Notification successfully dispatched (simulated provider).
+                  </p>
                 )}
                 {stage === 'partial_failure' && <button className="primary-button primary-button--warning" onClick={resetDemo}><Icon name="refresh" size={17} />Review recovery again</button>}
                 {(stage === 'proposed') && <button className="primary-button" onClick={() => approvePlan()} disabled={isBusy}><Icon name="shield" size={17} />Approve exact plan hash</button>}
@@ -727,7 +961,39 @@ function App() {
           <aside className="activity-column">
             <div className="activity-header"><div><span className="eyebrow">AGENT ACTIVITY</span><h2>What’s happening</h2></div><span className="live-pill"><i />MIXED</span></div>
             <div className="activity-card panel">
-              <div className="activity-card-head"><span className="activity-pulse"><i /><i /><i /></span><div><strong>{stage === 'review' ? 'Waiting for your approval' : stage === 'executing' ? 'Executing approved plan' : stage === 'recovered' ? 'Backend confirmed recovery' : 'Backend reported partial failure'}</strong><small>{stage === 'review' ? 'Timeline mixes illustrative scenario rows with live tool results after you run a plan.' : backendResult ? `Server status: ${backendResult.status}` : 'Awaiting server confirmation.'}</small></div></div>
+              <div className="activity-card-head">
+                <span className="activity-pulse"><i /><i /><i /></span>
+                <div>
+                  <strong>
+                    {stage === 'review'
+                      ? 'Waiting for your proposal'
+                      : stage === 'proposed'
+                        ? 'Plan proposed · Awaiting approval'
+                        : stage === 'approved'
+                          ? 'Plan approved · Ready to execute'
+                          : stage === 'executing'
+                            ? 'Executing approved plan'
+                            : stage === 'recovered'
+                              ? 'Backend confirmed recovery'
+                              : stage === 'partial_failure'
+                                ? 'Backend reported partial failure'
+                                : 'Execution outcome unresolved'}
+                  </strong>
+                  <small>
+                    {stage === 'review'
+                      ? (liveTrip ? 'Itinerary and flight disruption loaded from backend.' : 'Timeline mixes illustrative scenario rows with live tool results.')
+                      : stage === 'proposed'
+                        ? 'Server hash generated. No actions have been executed.'
+                        : stage === 'approved'
+                          ? 'Approval hash locked on server. Ready for execution.'
+                          : stage === 'executing'
+                            ? 'Transaction running on backend with lease heartbeat…'
+                            : backendResult
+                              ? `Server status: ${backendResult.status}`
+                              : 'Awaiting server confirmation.'}
+                  </small>
+                </div>
+              </div>
               <div className="event-list">{activityEvents.map((event) => {
                 const state = eventState(event.id)
                 return <div className={`event-row event-row--${state}`} key={event.id}><span className="event-marker">{state === 'done' ? <Icon name="check" size={11} /> : state === 'running' ? <span className="event-spinner" /> : state === 'warning' ? '!' : ''}</span><div className="event-copy"><div><strong>{event.name}</strong><TierBadge tier={event.tier} /></div><small>{event.detail}</small></div><span className="event-time mono">{event.time}</span></div>

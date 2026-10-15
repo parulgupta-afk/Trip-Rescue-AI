@@ -28,7 +28,7 @@ def get_trip(trip_id: str = "TRIP-100") -> dict[str, Any]:
     _ensure_ready()
     trip = repo.get_trip(trip_id)
     if not trip:
-        return {"error": f"Trip {trip_id} not found"}
+        return {"ok": False, "error": "TRIP_NOT_FOUND", "message": f"Trip {trip_id} not found"}
     return trip
 
 
@@ -37,7 +37,7 @@ def check_flight_status(trip_id: str = "TRIP-100") -> dict[str, Any]:
     _ensure_ready()
     trip = repo.get_trip(trip_id)
     if not trip:
-        return {"error": f"Trip {trip_id} not found"}
+        return {"ok": False, "error": "TRIP_NOT_FOUND", "message": f"Trip {trip_id} not found"}
     return flight_provider.check_flight_status(trip)
 
 
@@ -55,7 +55,7 @@ def search_alternatives(
     _ensure_ready()
     trip = repo.get_trip(trip_id)
     if not trip:
-        return {"error": f"Trip {trip_id} not found"}
+        return {"ok": False, "error": "TRIP_NOT_FOUND", "message": f"Trip {trip_id} not found"}
     prefs = repo.get_preferences(user_id)
     ranked = flight_provider.search_alternatives(trip, prefs)
     return {"alternatives": ranked, "count": len(ranked), "provider": "simulated"}

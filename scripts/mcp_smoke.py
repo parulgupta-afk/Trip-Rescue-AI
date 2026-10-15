@@ -25,9 +25,20 @@ async def registration_check() -> int:
         tools = await mcp.list_tools()
         names = [getattr(t, "name", str(t)) for t in tools]
         print("OK: tools =", names)
-        if "get_trip" not in names:
-            print("FAIL: get_trip not registered")
-            return 1
+        expected_critical = [
+            "get_trip",
+            "check_flight_status",
+            "propose_rescue_plan",
+            "approve_rescue_plan",
+            "execute_rescue_plan",
+            "send_notifications",
+            "reconcile_stale_notification_send",
+            "recover_stuck_execution",
+        ]
+        for tool in expected_critical:
+            if tool not in names:
+                print(f"FAIL: {tool} not registered")
+                return 1
     except Exception as e:
         print("FAIL: list_tools:", e)
         return 1
@@ -72,6 +83,9 @@ async def network_check() -> int:
             print("OK: network list_tools =", names)
             if "check_flight_status" not in names:
                 print("FAIL: check_flight_status missing")
+                return 1
+            if "reconcile_stale_notification_send" not in names:
+                print("FAIL: reconcile_stale_notification_send missing from network list_tools")
                 return 1
             result = await client.call_tool("check_flight_status", {"trip_id": "TRIP-100"})
             print("OK: network call_tool result type =", type(result).__name__)

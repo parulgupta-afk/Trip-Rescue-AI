@@ -331,6 +331,12 @@ def send_notifications(
     sent: list[dict] = []
     try:
         for d in drafts:
+            # Renew lease before each dispatch so slow, active provider calls are not marked stale
+            with db_session() as c_renew:
+                c_renew.execute(
+                    "UPDATE notification_sends SET claimed_at = ? WHERE id = ? AND status = 'sending'",
+                    (_now_iso(), send_id),
+                )
             result = message_provider.send_message({**d, "status": "draft"})
             sent.append(result)
     except Exception as e:
@@ -414,23 +420,35 @@ def reconcile_stale_notification_send(
     stale_after_seconds: int = STALE_SEND_SECONDS,
 ) -> dict[str, Any]:
     """Mark a stale 'sending' reservation as uncertain. Never redispatches provider."""
+    if stale_after_seconds <= 0:
+        return {
+            "ok": False,
+            "error": "INVALID_ARGUMENT",
+            "message": "stale_after_seconds must be a positive integer.",
+        }
+
     plan = repo.get_plan(plan_id)
     if not plan:
         return {"ok": False, "error": "PLAN_NOT_FOUND"}
     if plan["user_id"] != user_id:
         return {"ok": False, "error": "OWNERSHIP"}
 
-    with db_session() as conn:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT * FROM notification_sends WHERE plan_id = ? AND content_hash = ?",
             (plan_id, content_hash),
         ).fetchone()
         if not row:
+            conn.rollback()
             return {"ok": False, "error": "NO_SEND", "message": "No send reservation found"}
         es = dict(row)
         if es["status"] == "sent":
+            conn.rollback()
             return {"ok": True, "idempotent": True, "status": "sent", "message": "Already sent"}
         if es["status"] == "uncertain":
+            conn.rollback()
             return {
                 "ok": False,
                 "error": "SEND_UNCERTAIN",
@@ -438,14 +456,19 @@ def reconcile_stale_notification_send(
                 "message": "Already uncertain; provider will not be retried automatically.",
             }
         if es["status"] != "sending":
+            conn.rollback()
             return {"ok": False, "error": "SEND_STATE", "status": es["status"]}
 
         claimed = es.get("claimed_at") or es.get("created_at")
         try:
             claimed_dt = datetime.fromisoformat(claimed) if claimed else None
+            if claimed_dt and claimed_dt.tzinfo is None:
+                claimed_dt = claimed_dt.replace(tzinfo=timezone.utc)
         except ValueError:
             claimed_dt = None
+
         if claimed_dt is None or (_now() - claimed_dt).total_seconds() < stale_after_seconds:
+            conn.rollback()
             return {
                 "ok": False,
                 "error": "SEND_IN_PROGRESS",
@@ -460,6 +483,7 @@ def reconcile_stale_notification_send(
             (json.dumps({"reconciled": True, "reason": "stale_lease"}), es["id"]),
         )
         if cur.rowcount != 1:
+            conn.rollback()
             return {
                 "ok": False,
                 "error": "CLAIM_FAILED",
@@ -469,6 +493,12 @@ def reconcile_stale_notification_send(
             "UPDATE notification_drafts SET status = 'uncertain' WHERE id = ?",
             (es["draft_id"],),
         )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     return {
         "ok": True,

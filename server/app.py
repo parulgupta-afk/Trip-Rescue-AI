@@ -119,5 +119,18 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict:
     return trip_tools.recover_stuck_execution(plan_id, user_id)
 
 
+@mcp.tool()
+def reconcile_stale_notification_send(
+    plan_id: str,
+    content_hash: str,
+    user_id: str = "user-alex",
+    stale_after_seconds: int = 120,
+) -> dict:
+    """Mark an abandoned notification send reservation as uncertain. Does NOT redispatch mock provider."""
+    return trip_tools.reconcile_stale_notification_send(
+        plan_id, content_hash, user_id, stale_after_seconds
+    )
+
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
