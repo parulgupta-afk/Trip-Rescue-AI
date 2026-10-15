@@ -111,7 +111,7 @@ def test_recover_stuck_executing():
             "UPDATE plans SET status = 'executing' WHERE id = ?",
             (plan["plan_id"],),
         )
-    result = execution_service.recover_stuck_execution(plan["plan_id"])
+    result = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
     assert result["ok"] is True
     assert result["status"] == "partially_failed"
 
@@ -160,14 +160,14 @@ def test_recover_marks_missing_steps_interrupted():
     trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
     with db_session() as conn:
         conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
-    r = execution_service.recover_stuck_execution(plan["plan_id"])
+    r = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
     assert r["ok"] is True
     assert r["status"] == "partially_failed"
     assert len(r.get("interrupted_steps") or []) >= 1
     statuses = {s["status"] for s in r["steps"]}
     assert "interrupted" in statuses
     # repeated recovery is idempotent
-    r2 = execution_service.recover_stuck_execution(plan["plan_id"])
+    r2 = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
     assert r2.get("idempotent") is True or r2["status"] == "partially_failed"
 
 
@@ -177,6 +177,48 @@ def test_recover_via_tool_surface():
     trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
     with db_session() as conn:
         conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
-    r = trip_tools.recover_stuck_execution(plan["plan_id"])
+    r = trip_tools.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
     assert r["ok"] is True
     assert r["status"] == "partially_failed"
+
+
+def test_recover_refuses_active_lease():
+    from server.store.database import db_session
+    from server.domain import execution_service
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    with db_session() as conn:
+        conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
+        conn.execute(
+            "INSERT OR REPLACE INTO execution_claims (plan_id, claimed_at, worker_id) VALUES (?, datetime('now'), 'w1')",
+            (plan["plan_id"],),
+        )
+    r = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=3600)
+    assert r.get("error") == "EXECUTION_ACTIVE"
+    assert r.get("status") == "executing"
+
+
+def test_finalize_failed_when_reconcile_wins():
+    """If send row is no longer 'sending', finalization must not report success."""
+    from server.store.database import db_session
+    from server.domain import notification_service
+    from server.providers import message_provider
+
+    message_provider.reset_send_hooks()
+    plan = trip_tools.propose_rescue_plan("FLIGHT-B")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    trip_tools.execute_rescue_plan(plan["plan_id"])
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+
+    # Pre-seed a sending row then mark uncertain (simulate reconcile race)
+    with db_session() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO notification_sends
+               (id, plan_id, draft_id, content_hash, result_json, status, created_at, claimed_at)
+               VALUES ('race-1', ?, ?, ?, '[]', 'uncertain', datetime('now'), datetime('now'))""",
+            (plan["plan_id"], draft["draft_id"], draft["content_hash"]),
+        )
+    # send should not succeed
+    result = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert result.get("ok") is False

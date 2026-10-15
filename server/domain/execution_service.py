@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from server.store.database import db_session
+from server.store.database import db_session, get_connection
 from server.store import repositories as repo
 from server.domain import approval_service
 from server.providers import hotel_provider, ride_provider, message_provider
@@ -16,8 +16,11 @@ from server.providers import hotel_provider, ride_provider, message_provider
 FORCE_FAIL_STEP: str | None = None  # e.g. "reschedule_ride"
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _now().isoformat()
 
 
 def _id() -> str:
@@ -89,6 +92,14 @@ def execute_plan(
             "UPDATE plans SET status = 'executing' WHERE id = ? AND status = 'approved'",
             (plan_id,),
         )
+        if cur.rowcount == 1:
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO execution_claims (plan_id, claimed_at, worker_id) VALUES (?, ?, ?)",
+                    (plan_id, _now_iso(), _id()),
+                )
+            except Exception:
+                pass  # table may not exist until migrate
         if cur.rowcount != 1:
             # Another request claimed it, or status changed
             current = repo.get_plan(plan_id)
@@ -179,7 +190,20 @@ def execute_plan(
         final_status = "partially_failed"
 
     with db_session() as conn:
-        conn.execute("UPDATE plans SET status = ? WHERE id = ?", (final_status, plan_id))
+        cur = conn.execute(
+            "UPDATE plans SET status = ? WHERE id = ? AND status = 'executing'",
+            (final_status, plan_id),
+        )
+        if cur.rowcount != 1:
+            return {
+                "ok": False,
+                "error": "OWNERSHIP_LOST",
+                "plan_id": plan_id,
+                "status": (repo.get_plan(plan_id) or {}).get("status"),
+                "steps": results,
+                "compensations": compensations,
+                "message": "Execution worker lost ownership before finalizing failure status.",
+            }
 
     return {
         "ok": False,
@@ -294,13 +318,19 @@ def get_plan_status(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
     }
 
 
-def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
+def recover_stuck_execution(
+    plan_id: str,
+    user_id: str = "user-alex",
+    stale_after_seconds: int = 120,
+) -> dict[str, Any]:
     """
-    Recover a plan stuck in 'executing' after interruption.
+    Recover abandoned executions only.
 
-    Atomic claim first: only the winner of UPDATE ... WHERE status='executing'
-    may write interruption records. Losers leave no side effects.
-    Never retries providers or invents success.
+    1. Ownership check
+    2. Plan must be 'executing'
+    3. Must be stale (no recent step activity / claim older than lease) OR force via stale_after_seconds=0 for tests
+    4. Atomic claim to partially_failed in same transaction as interrupted step inserts
+    5. Losers write nothing
     """
     plan = repo.get_plan(plan_id)
     if not plan:
@@ -317,48 +347,105 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
             "message": f"Plan is not stuck in executing (status={plan['status']}).",
         }
 
-    # Claim BEFORE writing any step records
-    with db_session() as conn:
+    steps_before = _get_steps(plan_id)
+    # Stale detection: use latest step completed_at or plan-level executing claim marker
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT status, user_id FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        if not row or row["status"] != "executing" or row["user_id"] != user_id:
+            conn.rollback()
+            current = repo.get_plan(plan_id)
+            return {
+                "ok": True,
+                "idempotent": True,
+                "plan_id": plan_id,
+                "status": (current or {}).get("status"),
+                "steps": _get_steps(plan_id),
+                "message": "Recovery did not claim; plan no longer executing.",
+            }
+
+        # Lease: check execution_claims if present, else step timestamps
+        claim = conn.execute(
+            "SELECT claimed_at FROM execution_claims WHERE plan_id = ?", (plan_id,)
+        ).fetchone() if _table_exists(conn, "execution_claims") else None
+        last_step = conn.execute(
+            "SELECT MAX(completed_at) AS ts FROM execution_steps WHERE plan_id = ?",
+            (plan_id,),
+        ).fetchone()
+        ref_ts = None
+        if claim and claim["claimed_at"]:
+            ref_ts = claim["claimed_at"]
+        elif last_step and last_step["ts"]:
+            ref_ts = last_step["ts"]
+        # If no timestamp, treat as stale only when stale_after_seconds == 0 (explicit test) or missing activity
+        if ref_ts and stale_after_seconds > 0:
+            try:
+                claimed_dt = datetime.fromisoformat(ref_ts)
+                if claimed_dt.tzinfo is None:
+                    claimed_dt = claimed_dt.replace(tzinfo=timezone.utc)
+                age = (_now() - claimed_dt).total_seconds()
+            except ValueError:
+                age = stale_after_seconds + 1
+            if age < stale_after_seconds:
+                conn.rollback()
+                return {
+                    "ok": False,
+                    "error": "EXECUTION_ACTIVE",
+                    "plan_id": plan_id,
+                    "status": "executing",
+                    "message": "Execution appears active (within lease). Recovery refused.",
+                }
+
         cur = conn.execute(
             "UPDATE plans SET status = 'partially_failed' WHERE id = ? AND status = 'executing'",
             (plan_id,),
         )
-        claimed = cur.rowcount == 1
-
-    if not claimed:
-        current = repo.get_plan(plan_id)
-        return {
-            "ok": True,
-            "idempotent": True,
-            "plan_id": plan_id,
-            "status": (current or {}).get("status"),
-            "steps": _get_steps(plan_id),
-            "message": "Concurrent status change: recovery did not claim ownership; no step records written.",
-        }
-
-    actions = plan.get("actions") or []
-    existing = _get_steps(plan_id)
-    by_num: dict[int, dict] = {}
-    for s in existing:
-        by_num[int(s["step_number"])] = s
-
-    interrupted: list[dict] = []
-    for i, action in enumerate(actions):
-        step_number = i + 1
-        action_type = action.get("type", "unknown")
-        step_key = f"{plan_id}:step:{step_number}:{action_type}"
-        rec = by_num.get(step_number)
-        terminal = {"success", "failed", "compensated", "interrupted", "uncertain"}
-        if rec is None or rec.get("status") not in terminal:
-            result = {
-                "status": "interrupted",
-                "step_id": step_key,
-                "message": "No terminal provider result recorded before interruption.",
+        if cur.rowcount != 1:
+            conn.rollback()
+            return {
+                "ok": True,
+                "idempotent": True,
+                "plan_id": plan_id,
+                "status": (repo.get_plan(plan_id) or {}).get("status"),
+                "message": "Lost recovery race; no step records written.",
             }
-            _record_step(
-                plan_id, step_number, action_type, "interrupted", result, "INTERRUPTED", _now_iso()
-            )
-            interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
+
+        actions = plan.get("actions") or []
+        existing = {
+            int(r["step_number"]): dict(r)
+            for r in conn.execute(
+                "SELECT * FROM execution_steps WHERE plan_id = ?", (plan_id,)
+            ).fetchall()
+        }
+        interrupted = []
+        terminal = {"success", "failed", "compensated", "interrupted", "uncertain"}
+        for i, action in enumerate(actions):
+            step_number = i + 1
+            action_type = action.get("type", "unknown")
+            step_key = f"{plan_id}:step:{step_number}:{action_type}"
+            rec = existing.get(step_number)
+            if rec is None or rec.get("status") not in terminal:
+                result_json = json.dumps({
+                    "status": "interrupted",
+                    "step_id": step_key,
+                    "message": "No terminal provider result before recovery.",
+                })
+                conn.execute(
+                    """INSERT INTO execution_steps
+                       (id, plan_id, step_number, action_type, status, result_json, error_code, started_at, completed_at)
+                       VALUES (?, ?, ?, ?, 'interrupted', ?, 'INTERRUPTED', ?, ?)""",
+                    (_id(), plan_id, step_number, action_type, result_json, _now_iso(), _now_iso()),
+                )
+                interrupted.append({"step_number": step_number, "type": action_type, "step_id": step_key})
+        if _table_exists(conn, "execution_claims"):
+            conn.execute("DELETE FROM execution_claims WHERE plan_id = ?", (plan_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     steps = _get_steps(plan_id)
     return {
@@ -368,9 +455,15 @@ def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict[st
         "interrupted_steps": interrupted,
         "steps": steps,
         "message": (
-            "Plan left in executing was marked partially_failed. "
-            f"{len(interrupted)} step(s) recorded as interrupted (unknown outcome). "
-            "Providers were not retried; do not assume success."
+            f"Recovered abandoned execution. {len(interrupted)} step(s) marked interrupted. "
+            "Providers not retried."
         ),
         "provider": "simulated",
     }
+
+
+def _table_exists(conn, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None

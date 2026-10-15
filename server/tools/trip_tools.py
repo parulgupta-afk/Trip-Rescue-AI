@@ -169,10 +169,14 @@ def list_preferences(user_id: str = "user-alex") -> dict:
     return {"user_id": user_id, "preferences": prefs, "count": len(prefs)}
 
 
-def recover_stuck_execution(plan_id: str, user_id: str = "user-alex") -> dict:
-    """Mark an interrupted 'executing' plan as partially_failed; never invents success."""
+def recover_stuck_execution(
+    plan_id: str,
+    user_id: str = "user-alex",
+    stale_after_seconds: int = 120,
+) -> dict:
+    """Mark an abandoned 'executing' plan as partially_failed; never invents success."""
     _ensure_ready()
-    return execution_service.recover_stuck_execution(plan_id, user_id)
+    return execution_service.recover_stuck_execution(plan_id, user_id, stale_after_seconds)
 
 
 def reconcile_stale_notification_send(

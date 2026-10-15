@@ -38,3 +38,10 @@ def migrate_schema() -> None:
             return
         if "claimed_at" not in cols:
             conn.execute("ALTER TABLE notification_sends ADD COLUMN claimed_at TEXT")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS execution_claims (
+                plan_id TEXT PRIMARY KEY,
+                claimed_at TEXT NOT NULL,
+                worker_id TEXT
+            )"""
+        )

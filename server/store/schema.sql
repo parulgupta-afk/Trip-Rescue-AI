@@ -123,3 +123,10 @@ CREATE TABLE IF NOT EXISTS notification_sends (
     claimed_at TEXT,
     UNIQUE(plan_id, content_hash)
 );
+
+
+CREATE TABLE IF NOT EXISTS execution_claims (
+    plan_id TEXT PRIMARY KEY,
+    claimed_at TEXT NOT NULL,
+    worker_id TEXT
+);

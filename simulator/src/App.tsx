@@ -155,7 +155,7 @@ function App() {
     let active = true
     async function bootstrap() {
       try {
-        const health = await fetch((import.meta as any).env?.VITE_MCP_URL || 'http://localhost:8000' + '/health').then(r => r.json()).catch(() => null)
+        const base = String((import.meta as any).env?.VITE_MCP_URL || 'http://localhost:8000').replace(/\/$/, ''); const health = await fetch(base + '/health').then(r => r.json()).catch(() => null)
         if (!active) return
         setBackendOnline(!!health && health.status === 'ok')
       } catch {
@@ -323,14 +323,6 @@ function App() {
       if (result.status === 'succeeded') {
         setStage('recovered')
         announce(`Backend confirmed success · plan ${backendPlan.plan_id}`)
-        try {
-          pushLog(`draft_notifications({ plan_id: "${backendPlan.plan_id}" })`)
-          const draft = await mcp.draftNotifications(backendPlan.plan_id)
-          setNotificationDraft(draft)
-          pushLog(`// draft ready hash=${String(draft.content_hash).slice(0, 16)}…`)
-        } catch (e: any) {
-          pushLog(`// draft_notifications note: ${e?.message || e}`)
-        }
       } else if (result.status === 'failed_rolled_back' || result.status === 'partially_failed') {
         setStage('partial_failure')
         announce(`Backend reported ${result.status}`)
@@ -366,27 +358,51 @@ function App() {
     }
   }
 
-  const sendNotificationAction = async () => {
-    if (!backendPlan || !notificationDraft || sendingNotif) return
+
+  const draftNotificationAction = async () => {
+    if (!backendPlan?.plan_id || sendingNotif) return
     setSendingNotif(true)
-    const log = [...toolLog]
-    const pushLog = (line: string) => { log.push(line); setToolLog([...log]) }
     try {
-      pushLog(`approve_notifications({ plan_id: "${backendPlan.plan_id}", draft_hash: "${notificationDraft.content_hash.slice(0, 16)}…" })`)
-      const ap = await mcp.approveNotifications(backendPlan.plan_id, notificationDraft.content_hash)
-      if (!ap.ok) throw new Error(ap.message || ap.error || 'Notification approval failed')
-
-      pushLog(`send_notifications({ plan_id: "${backendPlan.plan_id}", draft_hash: "${notificationDraft.content_hash.slice(0, 16)}…" })`)
-      const sent = await mcp.sendNotifications(backendPlan.plan_id, notificationDraft.content_hash)
-      if (!sent.ok) throw new Error(sent.message || sent.error || 'Failed to send notification')
-
-      setNotificationSent(true)
-      announce(`Notification sent to Sam (${(sent.sent || []).length} message delivered via mock provider)`)
-      pushLog(`// notification sent provider=simulated count=${(sent.sent || []).length}`)
+      const draft = await mcp.draftNotifications(backendPlan.plan_id)
+      if (draft.error || draft.ok === false) throw new Error(draft.message || draft.error || 'Draft failed')
+      setNotificationDraft(draft)
+      announce('Notification draft loaded from server. Review the body before approving.')
     } catch (e: any) {
-      const msg = e?.message || String(e)
-      announce(`Could not send notification: ${msg}`)
-      pushLog(`// notification error: ${msg}`)
+      announce(`Draft failed: ${e?.message || 'error'}`)
+    } finally {
+      setSendingNotif(false)
+    }
+  }
+
+  const approveNotificationAction = async () => {
+    if (!backendPlan?.plan_id || !notificationDraft?.content_hash || sendingNotif) return
+    setSendingNotif(true)
+    try {
+      const ap = await mcp.approveNotifications(backendPlan.plan_id, notificationDraft.content_hash)
+      if (!ap.ok) throw new Error(ap.message || ap.error || 'Approval failed')
+      setNotificationDraft({ ...notificationDraft, approved: true, approval: ap })
+      announce('Notification draft approved on server. Sending still requires a separate step.')
+    } catch (e: any) {
+      announce(`Notification approval failed: ${e?.message || 'error'}`)
+    } finally {
+      setSendingNotif(false)
+    }
+  }
+
+  const sendNotificationAction = async () => {
+    if (!backendPlan?.plan_id || !notificationDraft?.content_hash || sendingNotif) return
+    if (!notificationDraft.approved) {
+      announce('Approve the notification draft before sending.')
+      return
+    }
+    setSendingNotif(true)
+    try {
+      const sent = await mcp.sendNotifications(backendPlan.plan_id, notificationDraft.content_hash)
+      if (!sent.ok) throw new Error(sent.message || sent.error || 'Send failed')
+      setNotificationSent(true)
+      announce('Notification send confirmed by server (simulated provider).')
+    } catch (e: any) {
+      announce(`Send failed: ${e?.message || 'error'}. Do not assume delivery.`)
     } finally {
       setSendingNotif(false)
     }
@@ -467,7 +483,7 @@ function App() {
 
   const activityEvents = useMemo(() => {
     const events: ToolEvent[] = [
-      { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'SK 908 delay detected (illustrative mock scenario)' },
+      { id: 'status', time: '14:32:08', tier: 'read', name: 'get_disruption', detail: 'ILLUSTRATIVE design row — not live backend data' },
       { id: 'impact', time: '14:32:09', tier: 'read', name: 'get_trip_impact', detail: 'Connection, hotel check-in, ride at risk' },
       { id: 'rank', time: '14:32:11', tier: 'propose', name: 'rank_alternatives', detail: 'Scoring alternative flights against preferences' },
       {
@@ -567,8 +583,16 @@ function App() {
     return 'done'
   }
 
-  const stageLabel = stage === 'review' ? 'APPROVAL REQUIRED' : stage === 'executing' ? 'EXECUTING SAFELY' : stage === 'recovered' ? 'RECOVERY COMPLETE' : 'PARTIAL FAILURE · CAPTURED'
-  const stageTone = stage === 'review' ? 'amber' : stage === 'executing' ? 'blue' : stage === 'recovered' ? 'teal' : 'coral'
+  const stageLabel =
+    stage === 'review' ? 'REVIEW'
+    : stage === 'proposed' ? 'PROPOSED · AWAITING APPROVAL'
+    : stage === 'approved' ? 'APPROVED · READY TO EXECUTE'
+    : stage === 'executing' ? 'EXECUTING'
+    : stage === 'recovered' ? 'RECOVERY COMPLETE'
+    : stage === 'uncertain' ? 'UNRESOLVED'
+    : stage === 'partial_failure' ? 'PARTIAL FAILURE'
+    : 'UNKNOWN'
+  const stageTone = stage === 'recovered' ? 'teal' : (stage === 'partial_failure' || stage === 'uncertain') ? 'coral' : (stage === 'executing' || stage === 'proposed' || stage === 'approved') ? 'blue' : 'amber'
 
   return (
     <div className="app-shell">
@@ -594,7 +618,7 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="mobile-brand"><BrandMark compact /></div>
-          <div className="breadcrumbs"><span>TRIPS</span><Icon name="chevron" size={12} /><strong>TRP-00419</strong><StatusChip tone="blue" dot>DEMO MODE</StatusChip></div>
+          <div className="breadcrumbs"><span>TRIPS</span><Icon name="chevron" size={12} /><strong>{liveTrip?.id || 'TRIP-100'}</strong><StatusChip tone="blue" dot>DEMO MODE</StatusChip></div>
           <div className="topbar-actions"><span className="sync-state"><span className="sync-dot" />{backendOnline === true ? 'Backend reachable' : backendOnline === false ? 'Backend offline' : 'Checking backend…'}</span><button className="icon-button" aria-label="Open preferences" onClick={() => setPreferencesOpen(true)}><Icon name="sliders" size={18} /></button><button className="avatar avatar--small" onClick={() => setPreferencesOpen(true)}>AR</button></div>
         </header>
 
@@ -604,7 +628,12 @@ function App() {
               <div className="hero-copy">
                 <div className="eyebrow-row"><span className="eyebrow eyebrow--amber">LIVE DISRUPTION</span><span className="signal-line" aria-hidden="true"><i /><i /><i /><i /><i /></span><span className="mono muted">14:32 LOCAL</span></div>
                 <h1>Your connection<br /><em>is at risk.</em></h1>
-                <p className="hero-lede">SK 908 is delayed by <strong>1h 40m</strong>. Your Copenhagen connection is no longer safe—but the rest of your trip is still recoverable.</p>
+                <p className="hero-lede">{liveDisruption?.disrupted
+                  ? <>{liveDisruption.flight_number || 'Flight'} delayed by <strong>{liveDisruption.delay_hours ?? '?'}h</strong>. {liveDisruption.message || 'Trip recovery is available.'} <span className="muted">(simulated provider)</span></>
+                  : liveTrip
+                    ? <>Loaded trip <strong>{liveTrip.id}</strong> from backend. <span className="muted">(simulated)</span></>
+                    : <>Waiting for backend trip data. Static design copy is illustrative only.</>
+                }</p>
                 <div className="hero-meta"><span><Icon name="clock" size={15} />Detected 14:32</span><span><Icon name="database" size={15} />Live provider check</span><span><Icon name="shield" size={15} />You stay in control</span></div>
               </div>
               <div className="impact-card">
@@ -632,7 +661,7 @@ function App() {
             </section>
 
             <section className={`plan-card panel plan-card--${stage}`}>
-              <div className="plan-header"><div><div className="eyebrow-row"><span className="eyebrow">COORDINATED RESCUE PLAN</span><span className="mono muted">{backendPlan ? `VERSION ${String(backendPlan.version || 1).padStart(2, '0')} · HASH ${String(backendPlan.plan_hash || '').slice(0, 4).toUpperCase()}…${String(backendPlan.plan_hash || '').slice(-4).toUpperCase()}` : 'PENDING PROPOSAL · SERVER HASH BOUND'}</span></div><h2>{stage === 'review' ? 'Ready for your say.' : stage === 'executing' ? 'Your plan is in motion.' : stage === 'recovered' ? 'Your trip is back on track.' : 'One step needs your attention.'}</h2><p>{stage === 'review' ? 'Review every change before anything is booked, moved or sent.' : stage === 'executing' ? 'We are running each step as a transaction. You will see the result of every action.' : stage === 'recovered' ? 'All recovery actions confirmed by backend. Notification draft ready.' : (backendResult?.message || 'The ride failed. Other steps were compensated. The message was not sent.')}</p></div><StatusChip tone={stageTone} dot>{stageLabel}</StatusChip></div>
+              <div className="plan-header"><div><div className="eyebrow-row"><span className="eyebrow">COORDINATED RESCUE PLAN</span><span className="mono muted">{backendPlan ? `VERSION ${String(backendPlan.version || 1).padStart(2, '0')} · HASH ${String(backendPlan.plan_hash || '').slice(0, 4).toUpperCase()}…${String(backendPlan.plan_hash || '').slice(-4).toUpperCase()}` : 'PENDING PROPOSAL · SERVER HASH BOUND'}</span></div><h2>{stage === 'review' ? 'Ready for your say.' : stage === 'proposed' ? 'Plan proposed — not approved yet.' : stage === 'approved' ? 'Approved — ready to execute.' : stage === 'executing' ? 'Your plan is in motion.' : stage === 'recovered' ? 'Backend confirmed recovery.' : stage === 'uncertain' ? 'Outcome unresolved.' : 'One step needs your attention.'}</h2><p>{stage === 'review' ? 'Review every change before anything is booked, moved or sent.' : stage === 'executing' ? 'We are running each step as a transaction. You will see the result of every action.' : stage === 'recovered' ? 'All recovery actions confirmed by backend. Notification draft ready.' : (backendResult?.message || 'The ride failed. Other steps were compensated. The message was not sent.')}</p></div><StatusChip tone={stageTone} dot>{stageLabel}</StatusChip></div>
               <div className="plan-items">
                 {backendPlan?.actions?.length ? backendPlan.actions.map((a: any, i: number) => (
                   <div className="plan-item" key={i}>
@@ -663,7 +692,26 @@ function App() {
                 {stage === 'review' && <button className="primary-button" onClick={() => proposePlan()}><Icon name="shield" size={17} />Propose plan only <span>→</span></button>}
                 {stage === 'executing' && <button className="primary-button primary-button--busy" disabled><span className="button-spinner" />Executing safely…</button>}
                 {stage === 'recovered' && <button className="primary-button primary-button--success" onClick={resetDemo}><Icon name="refresh" size={17} />Run demo again</button>}
-                {stage === 'recovered' && notificationDraft && !notificationSent && <button className="secondary-button" onClick={sendNotificationAction} disabled={sendingNotif}><Icon name="message" size={15} />{sendingNotif ? 'Sending…' : 'Approve & send notification'}</button>}
+                {stage === 'recovered' && !notificationDraft && <button className="secondary-button" onClick={draftNotificationAction} disabled={sendingNotif}><Icon name="message" size={15} />Load notification draft</button>}
+                {stage === 'recovered' && notificationDraft && (
+                  <div className="plan-disclaimer" style={{textAlign:'left', maxWidth: 420}}>
+                    <strong>Draft body (from server)</strong>
+                    {(notificationDraft.drafts || []).map((d: any, i: number) => (
+                      <p key={i} style={{margin:'0.5rem 0'}}><em>To {d.recipient}:</em> {d.body || d.subject}</p>
+                    ))}
+                    <small>hash {String(notificationDraft.content_hash || '').slice(0, 16)}… · simulated</small>
+                  </div>
+                )}
+                {stage === 'recovered' && notificationDraft && !notificationDraft.approved && !notificationSent && (
+                  <button className="secondary-button" onClick={approveNotificationAction} disabled={sendingNotif}>
+                    <Icon name="shield" size={15} />{sendingNotif ? 'Approving…' : 'Approve notification draft'}
+                  </button>
+                )}
+                {stage === 'recovered' && notificationDraft?.approved && !notificationSent && (
+                  <button className="secondary-button" onClick={sendNotificationAction} disabled={sendingNotif}>
+                    <Icon name="message" size={15} />{sendingNotif ? 'Sending…' : 'Send approved notification'}
+                  </button>
+                )}
                 {stage === 'partial_failure' && <button className="primary-button primary-button--warning" onClick={resetDemo}><Icon name="refresh" size={17} />Review recovery again</button>}
                 {(stage === 'proposed') && <button className="primary-button" onClick={() => approvePlan()} disabled={isBusy}><Icon name="shield" size={17} />Approve exact plan hash</button>}
                 {(stage === 'approved') && <button className="primary-button" onClick={() => executeApprovedPlan()} disabled={isBusy}><Icon name="check" size={17} />Execute approved plan</button>}

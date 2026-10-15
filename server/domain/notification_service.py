@@ -360,14 +360,33 @@ def send_notifications(
             "provider": "simulated",
         }
 
-    # --- Phase 3: finalize ---
+    # --- Phase 3: finalize only if still 'sending' (lost race with reconcile → uncertain) ---
     with db_session() as c3:
-        c3.execute(
+        cur = c3.execute(
             """UPDATE notification_sends
                SET status = 'sent', result_json = ?
                WHERE id = ? AND status = 'sending'""",
             (json.dumps(sent), send_id),
         )
+        if cur.rowcount != 1:
+            # Reconcile or concurrent change won — do not claim success
+            row = c3.execute(
+                "SELECT status FROM notification_sends WHERE id = ?", (send_id,)
+            ).fetchone()
+            st = row["status"] if row else "unknown"
+            return {
+                "ok": False,
+                "error": "SEND_UNCERTAIN" if st == "uncertain" else "FINALIZE_FAILED",
+                "plan_id": plan_id,
+                "draft_id": draft_id,
+                "status": st,
+                "sent": sent,
+                "message": (
+                    "Provider returned but DB finalization was not accepted "
+                    f"(status={st}). Do not assume delivery state."
+                ),
+                "provider": "simulated",
+            }
         c3.execute(
             "UPDATE notification_drafts SET status = 'sent' WHERE id = ?",
             (draft_id,),
