@@ -4,9 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from server.store.database import db_session, get_connection
 from server.store import repositories as repo
@@ -195,6 +196,43 @@ def _response_for_existing_send(plan_id: str, es: dict) -> dict[str, Any]:
     }
 
 
+def _renew_send_lease(send_id: str) -> bool:
+    """Verify send is still 'sending' and refresh claimed_at."""
+    with db_session() as conn:
+        cur = conn.execute(
+            "UPDATE notification_sends SET claimed_at = ? WHERE id = ? AND status = 'sending'",
+            (_now_iso(), send_id),
+        )
+        return cur.rowcount == 1
+
+
+class NotificationLeaseHeartbeat:
+    """Periodically renews notification send lease during provider dispatch."""
+
+    def __init__(self, send_id: str, interval: float = 0.5):
+        self.send_id = send_id
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.lost_ownership = False
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.interval):
+            if not _renew_send_lease(self.send_id):
+                self.lost_ownership = True
+                break
+
+    def __enter__(self) -> NotificationLeaseHeartbeat:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+
 def send_notifications(
     plan_id: str,
     draft_hash: str | None = None,
@@ -329,23 +367,24 @@ def send_notifications(
 
     # --- Phase 2: provider dispatch (only the winner reaches here) ---
     sent: list[dict] = []
+    lost_lease = False
     try:
-        for d in drafts:
-            # Renew lease before each dispatch so slow, active provider calls are not marked stale
-            with db_session() as c_renew:
-                c_renew.execute(
-                    "UPDATE notification_sends SET claimed_at = ? WHERE id = ? AND status = 'sending'",
-                    (_now_iso(), send_id),
-                )
-            result = message_provider.send_message({**d, "status": "draft"})
-            sent.append(result)
+        with NotificationLeaseHeartbeat(send_id, interval=0.5) as heartbeat:
+            for d in drafts:
+                if heartbeat.lost_ownership or not _renew_send_lease(send_id):
+                    lost_lease = True
+                    break
+                result = message_provider.send_message({**d, "status": "draft"})
+                sent.append(result)
+            if heartbeat.lost_ownership or not _renew_send_lease(send_id):
+                lost_lease = True
     except Exception as e:
         # Outcome unknown after possible partial dispatch — do not invent success or retry
         with db_session() as c2:
             c2.execute(
                 """UPDATE notification_sends
                    SET status = 'uncertain', result_json = ?
-                   WHERE id = ?""",
+                   WHERE id = ? AND status = 'sending'""",
                 (json.dumps({"error": str(e), "partial": sent}), send_id),
             )
             c2.execute(
@@ -362,6 +401,24 @@ def send_notifications(
             "message": (
                 "Provider dispatch failed after reservation. Outcome uncertain; "
                 "will not auto-retry. Manual check required."
+            ),
+            "provider": "simulated",
+        }
+
+    if lost_lease:
+        with db_session() as c_check:
+            row = c_check.execute("SELECT status FROM notification_sends WHERE id = ?", (send_id,)).fetchone()
+            st = row["status"] if row else "uncertain"
+        return {
+            "ok": False,
+            "error": "SEND_UNCERTAIN" if st == "uncertain" else "OWNERSHIP_LOST",
+            "plan_id": plan_id,
+            "draft_id": draft_id,
+            "status": st,
+            "sent": sent,
+            "message": (
+                "Reservation ownership or lease was lost during provider dispatch. "
+                "Do not assume delivery state; manual reconciliation required."
             ),
             "provider": "simulated",
         }
@@ -409,23 +466,34 @@ def send_notifications(
     }
 
 
-
-STALE_SEND_SECONDS = 120
+MIN_STALE_SEND_SECONDS = 30
+DEFAULT_STALE_SEND_SECONDS = 120
 
 
 def reconcile_stale_notification_send(
     plan_id: str,
     content_hash: str,
     user_id: str = "user-alex",
-    stale_after_seconds: int = STALE_SEND_SECONDS,
+    stale_after_seconds: int = DEFAULT_STALE_SEND_SECONDS,
+    *,
+    _force_for_test: bool = False,
+    _min_threshold_override: int | None = None,
 ) -> dict[str, Any]:
     """Mark a stale 'sending' reservation as uncertain. Never redispatches provider."""
-    if stale_after_seconds <= 0:
-        return {
-            "ok": False,
-            "error": "INVALID_ARGUMENT",
-            "message": "stale_after_seconds must be a positive integer.",
-        }
+    min_thresh = _min_threshold_override if _min_threshold_override is not None else MIN_STALE_SEND_SECONDS
+    if not _force_for_test:
+        if stale_after_seconds <= 0:
+            return {
+                "ok": False,
+                "error": "INVALID_ARGUMENT",
+                "message": "stale_after_seconds must be a positive integer.",
+            }
+        if stale_after_seconds < min_thresh:
+            return {
+                "ok": False,
+                "error": "INVALID_ARGUMENT",
+                "message": f"stale_after_seconds cannot be shorter than server lease threshold ({min_thresh}s).",
+            }
 
     plan = repo.get_plan(plan_id)
     if not plan:
@@ -467,14 +535,15 @@ def reconcile_stale_notification_send(
         except ValueError:
             claimed_dt = None
 
-        if claimed_dt is None or (_now() - claimed_dt).total_seconds() < stale_after_seconds:
-            conn.rollback()
-            return {
-                "ok": False,
-                "error": "SEND_IN_PROGRESS",
-                "status": "sending",
-                "message": "Reservation still within lease; not reconciled.",
-            }
+        if not _force_for_test:
+            if claimed_dt is None or (_now() - claimed_dt).total_seconds() < stale_after_seconds:
+                conn.rollback()
+                return {
+                    "ok": False,
+                    "error": "SEND_IN_PROGRESS",
+                    "status": "sending",
+                    "message": "Reservation still within lease; not reconciled.",
+                }
 
         cur = conn.execute(
             """UPDATE notification_sends
@@ -507,3 +576,14 @@ def reconcile_stale_notification_send(
         "message": "Stale sending reservation marked uncertain. Provider was not redispatched.",
         "provider": "simulated",
     }
+
+
+def force_reconcile_for_test(
+    plan_id: str,
+    content_hash: str,
+    user_id: str = "user-alex",
+) -> dict[str, Any]:
+    """Internal test helper ONLY: force reconciliation to test race handling when worker loses ownership."""
+    return reconcile_stale_notification_send(
+        plan_id, content_hash, user_id, stale_after_seconds=0, _force_for_test=True
+    )

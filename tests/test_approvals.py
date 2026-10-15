@@ -101,6 +101,7 @@ def test_atomic_claim_prevents_double_execute():
 
 
 def test_recover_stuck_executing():
+    from datetime import datetime, timezone, timedelta
     from server.store.database import db_session
     from server.domain import execution_service
 
@@ -111,7 +112,11 @@ def test_recover_stuck_executing():
             "UPDATE plans SET status = 'executing' WHERE id = ?",
             (plan["plan_id"],),
         )
-    result = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+        conn.execute(
+            "INSERT OR REPLACE INTO execution_claims (plan_id, claimed_at, worker_id) VALUES (?, ?, 'w-stale')",
+            (plan["plan_id"], (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()),
+        )
+    result = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=60)
     assert result["ok"] is True
     assert result["status"] == "partially_failed"
 
@@ -154,30 +159,40 @@ def test_recover_wrong_owner():
 
 
 def test_recover_marks_missing_steps_interrupted():
+    from datetime import datetime, timezone, timedelta
     from server.store.database import db_session
     from server.domain import execution_service
     plan = trip_tools.propose_rescue_plan("FLIGHT-A")
     trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
     with db_session() as conn:
         conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
-    r = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+        conn.execute(
+            "INSERT OR REPLACE INTO execution_claims (plan_id, claimed_at, worker_id) VALUES (?, ?, 'w-stale')",
+            (plan["plan_id"], (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()),
+        )
+    r = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=60)
     assert r["ok"] is True
     assert r["status"] == "partially_failed"
     assert len(r.get("interrupted_steps") or []) >= 1
     statuses = {s["status"] for s in r["steps"]}
     assert "interrupted" in statuses
     # repeated recovery is idempotent
-    r2 = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+    r2 = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=60)
     assert r2.get("idempotent") is True or r2["status"] == "partially_failed"
 
 
 def test_recover_via_tool_surface():
+    from datetime import datetime, timezone, timedelta
     from server.store.database import db_session
     plan = trip_tools.propose_rescue_plan("FLIGHT-B")
     trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
     with db_session() as conn:
         conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
-    r = trip_tools.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+        conn.execute(
+            "INSERT OR REPLACE INTO execution_claims (plan_id, claimed_at, worker_id) VALUES (?, ?, 'w-stale')",
+            (plan["plan_id"], (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()),
+        )
+    r = trip_tools.recover_stuck_execution(plan["plan_id"], stale_after_seconds=60)
     assert r["ok"] is True
     assert r["status"] == "partially_failed"
 
@@ -361,8 +376,8 @@ def test_worker_losing_ownership_cannot_overwrite_recovered_state():
     t.start()
     try:
         assert in_action.wait(timeout=5)
-        # Concurrent recovery worker steals the claim
-        rec = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+        # Concurrent recovery worker steals the claim via internal test helper
+        rec = execution_service.force_recover_for_test(plan["plan_id"])
         assert rec["ok"] is True
         assert rec["status"] == "partially_failed"
     finally:
@@ -408,8 +423,8 @@ def test_worker_losing_ownership_cannot_begin_additional_actions_or_compensation
     t.start()
     try:
         assert in_comp.wait(timeout=5)
-        # Stolen by recovery worker during compensation
-        rec = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+        # Stolen by recovery worker during compensation via internal test helper
+        rec = execution_service.force_recover_for_test(plan["plan_id"])
         assert rec["ok"] is True
     finally:
         resume_comp.set()
@@ -484,9 +499,9 @@ def test_notification_send_paused_in_provider_cannot_overwrite_reconciled_state(
                 "UPDATE notification_sends SET claimed_at = ? WHERE plan_id = ?",
                 (past, plan["plan_id"]),
             )
-        # Reconcile while the provider is paused
-        rec = notification_service.reconcile_stale_notification_send(
-            plan["plan_id"], draft["content_hash"], stale_after_seconds=60
+        # Reconcile while the provider is paused via internal test helper
+        rec = notification_service.force_reconcile_for_test(
+            plan["plan_id"], draft["content_hash"]
         )
         assert rec["ok"] is True
         assert rec["status"] == "uncertain"
@@ -514,4 +529,176 @@ def test_notification_send_paused_in_provider_cannot_overwrite_reconciled_state(
     retry_res = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
     assert retry_res["ok"] is False
     assert retry_res["error"] == "SEND_UNCERTAIN"
+    assert message_provider.get_send_count() == before_count
+
+
+def test_active_execution_cannot_be_interrupted_by_zero_negative_or_short_threshold():
+    """Active execution within lease cannot be interrupted or have its claim removed by zero, negative, or short threshold."""
+    from datetime import datetime, timezone
+    from server.store.database import db_session
+    from server.domain import execution_service
+    from fastapi.testclient import TestClient
+    from server.http_facade import app
+
+    client = TestClient(app)
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with db_session() as conn:
+        conn.execute("UPDATE plans SET status = 'executing' WHERE id = ?", (plan["plan_id"],))
+        conn.execute(
+            "INSERT OR REPLACE INTO execution_claims (plan_id, claimed_at, worker_id) VALUES (?, ?, 'worker-active-1')",
+            (plan["plan_id"], now_iso),
+        )
+
+    # 1. Negative threshold
+    r_neg_dom = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=-10)
+    assert r_neg_dom["ok"] is False
+    assert r_neg_dom["error"] == "INVALID_ARGUMENT"
+
+    r_neg_http = client.post("/tools/recover_stuck_execution", json={"plan_id": plan["plan_id"], "stale_after_seconds": -10})
+    assert r_neg_http.status_code == 422
+
+    # 2. Zero threshold (cannot force recovery of active execution)
+    r_zero_dom = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=0)
+    assert r_zero_dom["ok"] is False
+    assert r_zero_dom["error"] == "INVALID_ARGUMENT"
+
+    r_zero_http = client.post("/tools/recover_stuck_execution", json={"plan_id": plan["plan_id"], "stale_after_seconds": 0})
+    assert r_zero_http.status_code == 422
+
+    # 3. Unreasonably short threshold (e.g. 5s < 30s)
+    r_short_dom = execution_service.recover_stuck_execution(plan["plan_id"], stale_after_seconds=5)
+    assert r_short_dom["ok"] is False
+    assert r_short_dom["error"] == "INVALID_ARGUMENT"
+
+    r_short_tool = trip_tools.recover_stuck_execution(plan["plan_id"], stale_after_seconds=5)
+    assert r_short_tool["ok"] is False
+    assert r_short_tool["error"] == "INVALID_ARGUMENT"
+
+    r_short_http = client.post("/tools/recover_stuck_execution", json={"plan_id": plan["plan_id"], "stale_after_seconds": 5})
+    assert r_short_http.status_code == 422
+
+    # Verify active execution is NOT interrupted and claim was NOT removed
+    cur_plan = repo.get_plan(plan["plan_id"])
+    assert cur_plan["status"] == "executing"
+    with db_session() as conn:
+        claim = conn.execute("SELECT worker_id FROM execution_claims WHERE plan_id = ?", (plan["plan_id"],)).fetchone()
+        assert claim is not None
+        assert claim["worker_id"] == "worker-active-1"
+
+
+def test_active_notification_send_renews_lease_and_prevents_premature_reconciliation():
+    """Genuinely active send renews lease continuously and cannot be prematurely reconciled."""
+    import threading
+    import time
+    from server.store.database import db_session
+    from server.domain import notification_service
+    from server.providers import message_provider
+
+    message_provider.reset_send_hooks()
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    trip_tools.execute_rescue_plan(plan["plan_id"])
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+
+    send_started = threading.Event()
+    allow_finish = threading.Event()
+
+    def slow_provider_hook():
+        send_started.set()
+        allow_finish.wait(timeout=5)
+
+    message_provider.set_before_send(slow_provider_hook)
+    result_box = []
+
+    def run_worker():
+        res = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+        result_box.append(res)
+
+    t = threading.Thread(target=run_worker)
+    t.start()
+    try:
+        assert send_started.wait(timeout=5)
+        # Give heartbeat time to tick and refresh claimed_at
+        time.sleep(0.7)
+        # Attempt to reconcile with server lease threshold (30s)
+        rec = notification_service.reconcile_stale_notification_send(
+            plan["plan_id"], draft["content_hash"], stale_after_seconds=30
+        )
+        # Must refuse reconciliation because the heartbeat has kept claimed_at fresh!
+        assert rec["ok"] is False
+        assert rec["error"] == "SEND_IN_PROGRESS"
+        assert rec["status"] == "sending"
+    finally:
+        allow_finish.set()
+        t.join(timeout=5)
+        message_provider.reset_send_hooks()
+
+    assert len(result_box) == 1
+    assert result_box[0]["ok"] is True
+    assert result_box[0]["status"] == "sent"
+
+    # Status in database must be sent
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT status FROM notification_sends WHERE plan_id = ?", (plan["plan_id"],)
+        ).fetchone()
+        assert row["status"] == "sent"
+
+
+def test_genuinely_stale_reservation_becomes_uncertain_without_redispatch():
+    """Genuinely stale reservation is marked uncertain and neither reconcile nor subsequent send redispatches provider."""
+    from datetime import datetime, timezone, timedelta
+    from server.store.database import db_session
+    from server.domain import notification_service
+    from server.providers import message_provider
+
+    message_provider.reset_send_hooks()
+    plan = trip_tools.propose_rescue_plan("FLIGHT-A")
+    trip_tools.approve_rescue_plan(plan["plan_id"], plan["plan_hash"])
+    trip_tools.execute_rescue_plan(plan["plan_id"])
+    draft = trip_tools.draft_notifications(plan["plan_id"])
+    trip_tools.approve_notifications(plan["plan_id"], draft["content_hash"])
+
+    # Create an abandoned/stale reservation with claimed_at 300 seconds ago
+    past_iso = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    send_id = "send-stale-test"
+    with db_session() as conn:
+        conn.execute(
+            """INSERT INTO notification_sends
+               (id, plan_id, draft_id, content_hash, result_json, status, created_at, claimed_at)
+               VALUES (?, ?, ?, ?, '[]', 'sending', ?, ?)""",
+            (send_id, plan["plan_id"], draft["draft_id"], draft["content_hash"], past_iso, past_iso),
+        )
+        conn.execute(
+            "UPDATE notification_drafts SET status = 'sending' WHERE id = ?",
+            (draft["draft_id"],),
+        )
+
+    before_count = message_provider.get_send_count()
+
+    # Reconcile genuinely stale reservation
+    rec = notification_service.reconcile_stale_notification_send(
+        plan["plan_id"], draft["content_hash"], stale_after_seconds=60
+    )
+    assert rec["ok"] is True
+    assert rec["status"] == "uncertain"
+
+    # Provider must NOT have been called during reconciliation
+    assert message_provider.get_send_count() == before_count
+
+    # DB state must be uncertain
+    with db_session() as conn:
+        s_row = conn.execute("SELECT status FROM notification_sends WHERE id = ?", (send_id,)).fetchone()
+        assert s_row["status"] == "uncertain"
+        d_row = conn.execute("SELECT status FROM notification_drafts WHERE id = ?", (draft["draft_id"],)).fetchone()
+        assert d_row["status"] == "uncertain"
+
+    # Subsequent send attempt must NOT retry or redispatch provider
+    retry = trip_tools.send_notifications(plan["plan_id"], draft["content_hash"])
+    assert retry["ok"] is False
+    assert retry["error"] == "SEND_UNCERTAIN"
     assert message_provider.get_send_count() == before_count

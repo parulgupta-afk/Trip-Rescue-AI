@@ -98,15 +98,16 @@ def invoke_tool(tool_name: str, body: ToolArgs | None = None):
 
     # Validate stale_after_seconds if provided
     if "stale_after_seconds" in args and args["stale_after_seconds"] is not None:
-        if not isinstance(args["stale_after_seconds"], int) or args["stale_after_seconds"] < 0:
+        val = args["stale_after_seconds"]
+        if not isinstance(val, int) or isinstance(val, bool) or val <= 0:
             return JSONResponse(
                 status_code=422,
-                content={"ok": False, "error": "VALIDATION", "message": "stale_after_seconds must be a non-negative integer"},
+                content={"ok": False, "error": "VALIDATION", "message": "stale_after_seconds must be a positive integer"},
             )
-        if tool_name == "reconcile_stale_notification_send" and args["stale_after_seconds"] == 0:
+        if val < 30:
             return JSONResponse(
                 status_code=422,
-                content={"ok": False, "error": "VALIDATION", "message": "stale_after_seconds must be greater than zero for notification reconciliation"},
+                content={"ok": False, "error": "VALIDATION", "message": "stale_after_seconds cannot be shorter than server lease threshold (30s)"},
             )
 
     # Ignore client-supplied user_id for authorization; demo identity is server-side

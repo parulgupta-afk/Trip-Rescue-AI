@@ -176,7 +176,14 @@ def recover_stuck_execution(
 ) -> dict:
     """Mark an abandoned 'executing' plan as partially_failed; never invents success."""
     _ensure_ready()
-    return execution_service.recover_stuck_execution(plan_id, user_id, stale_after_seconds)
+    safe_stale = stale_after_seconds if stale_after_seconds is not None else 120
+    if not isinstance(safe_stale, int) or isinstance(safe_stale, bool) or safe_stale < 30:
+        return {
+            "ok": False,
+            "error": "INVALID_ARGUMENT",
+            "message": "stale_after_seconds cannot be shorter than server lease threshold (30s).",
+        }
+    return execution_service.recover_stuck_execution(plan_id, user_id, safe_stale)
 
 
 def reconcile_stale_notification_send(
@@ -187,6 +194,13 @@ def reconcile_stale_notification_send(
 ) -> dict:
     """Mark a stale sending reservation as uncertain without redispatching."""
     _ensure_ready()
+    safe_stale = stale_after_seconds if stale_after_seconds is not None else 120
+    if not isinstance(safe_stale, int) or isinstance(safe_stale, bool) or safe_stale < 30:
+        return {
+            "ok": False,
+            "error": "INVALID_ARGUMENT",
+            "message": "stale_after_seconds cannot be shorter than server lease threshold (30s).",
+        }
     return notification_service.reconcile_stale_notification_send(
-        plan_id, content_hash, user_id, stale_after_seconds
+        plan_id, content_hash, user_id, safe_stale
     )

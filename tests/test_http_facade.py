@@ -63,7 +63,7 @@ def test_reconcile_missing_content_hash_422():
     assert r.json().get("error") == "VALIDATION"
 
 
-def test_reconcile_negative_or_zero_stale_seconds_422():
+def test_reconcile_negative_or_zero_or_short_stale_seconds_422():
     r_neg = client.post("/tools/reconcile_stale_notification_send", json={"plan_id": "PLAN-1", "content_hash": "abc", "stale_after_seconds": -5})
     assert r_neg.status_code == 422
     assert r_neg.json().get("error") == "VALIDATION"
@@ -72,11 +72,23 @@ def test_reconcile_negative_or_zero_stale_seconds_422():
     assert r_zero.status_code == 422
     assert r_zero.json().get("error") == "VALIDATION"
 
+    r_short = client.post("/tools/reconcile_stale_notification_send", json={"plan_id": "PLAN-1", "content_hash": "abc", "stale_after_seconds": 5})
+    assert r_short.status_code == 422
+    assert r_short.json().get("error") == "VALIDATION"
 
-def test_recover_negative_stale_seconds_422():
-    r = client.post("/tools/recover_stuck_execution", json={"plan_id": "PLAN-1", "stale_after_seconds": -1})
-    assert r.status_code == 422
-    assert r.json().get("error") == "VALIDATION"
+
+def test_recover_negative_zero_or_short_stale_seconds_422():
+    r_neg = client.post("/tools/recover_stuck_execution", json={"plan_id": "PLAN-1", "stale_after_seconds": -1})
+    assert r_neg.status_code == 422
+    assert r_neg.json().get("error") == "VALIDATION"
+
+    r_zero = client.post("/tools/recover_stuck_execution", json={"plan_id": "PLAN-1", "stale_after_seconds": 0})
+    assert r_zero.status_code == 422
+    assert r_zero.json().get("error") == "VALIDATION"
+
+    r_short = client.post("/tools/recover_stuck_execution", json={"plan_id": "PLAN-1", "stale_after_seconds": 5})
+    assert r_short.status_code == 422
+    assert r_short.json().get("error") == "VALIDATION"
 
 
 def test_missing_trip_returns_404():

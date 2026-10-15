@@ -127,8 +127,9 @@ def reconcile_stale_notification_send(
     stale_after_seconds: int = 120,
 ) -> dict:
     """Mark an abandoned notification send reservation as uncertain. Does NOT redispatch mock provider."""
+    safe_stale = max(30, stale_after_seconds) if (isinstance(stale_after_seconds, int) and stale_after_seconds > 0) else 120
     return trip_tools.reconcile_stale_notification_send(
-        plan_id, content_hash, user_id, stale_after_seconds
+        plan_id, content_hash, user_id, safe_stale
     )
 
 

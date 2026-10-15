@@ -520,26 +520,41 @@ def get_plan_status(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
     }
 
 
+MIN_RECOVERY_STALE_SECONDS = 30
+DEFAULT_RECOVERY_STALE_SECONDS = 120
+
+
 def recover_stuck_execution(
     plan_id: str,
     user_id: str = "user-alex",
-    stale_after_seconds: int = 120,
+    stale_after_seconds: int = DEFAULT_RECOVERY_STALE_SECONDS,
+    *,
+    _force_for_test: bool = False,
+    _min_threshold_override: int | None = None,
 ) -> dict[str, Any]:
     """
     Recover abandoned executions only.
 
     1. Ownership check
     2. Plan must be 'executing'
-    3. Must be stale (no recent step activity / claim older than lease) OR force via stale_after_seconds=0 for tests
+    3. Must be stale (no recent step activity / claim older than lease). Force recovery is restricted to internal tests.
     4. Atomic claim to partially_failed in same transaction as interrupted step inserts
     5. Losers write nothing
     """
-    if stale_after_seconds < 0:
-        return {
-            "ok": False,
-            "error": "INVALID_ARGUMENT",
-            "message": "stale_after_seconds must be non-negative.",
-        }
+    min_thresh = _min_threshold_override if _min_threshold_override is not None else MIN_RECOVERY_STALE_SECONDS
+    if not _force_for_test:
+        if stale_after_seconds <= 0:
+            return {
+                "ok": False,
+                "error": "INVALID_ARGUMENT",
+                "message": "stale_after_seconds must be a positive integer.",
+            }
+        if stale_after_seconds < min_thresh:
+            return {
+                "ok": False,
+                "error": "INVALID_ARGUMENT",
+                "message": f"stale_after_seconds cannot be shorter than server lease threshold ({min_thresh}s).",
+            }
 
     plan = repo.get_plan(plan_id)
     if not plan:
@@ -588,8 +603,8 @@ def recover_stuck_execution(
         elif last_step and last_step["ts"]:
             ref_ts = last_step["ts"]
 
-        # If staleness cannot be established and not an explicit force test (stale_after_seconds == 0), fail closed
-        if stale_after_seconds > 0:
+        # If staleness cannot be established and not an internal force test, fail closed
+        if not _force_for_test:
             if not ref_ts:
                 conn.rollback()
                 return {
@@ -695,3 +710,9 @@ def _table_exists(conn, name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone()
     return row is not None
+
+
+def force_recover_for_test(plan_id: str, user_id: str = "user-alex") -> dict[str, Any]:
+    """Internal test helper ONLY: force recovery to test race handling when a worker loses ownership."""
+    return recover_stuck_execution(plan_id, user_id, stale_after_seconds=0, _force_for_test=True)
+
