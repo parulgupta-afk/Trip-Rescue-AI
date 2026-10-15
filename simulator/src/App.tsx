@@ -307,7 +307,7 @@ function App() {
 
   const executeApprovedPlan = async (forceFail?: string) => {
     if (isBusy || !backendPlan?.plan_id) return
-    if (stage !== 'approved' && stage !== 'executing') {
+    if (stage !== 'approved') {
       announce('Approve the plan before executing.')
       return
     }
@@ -323,6 +323,14 @@ function App() {
       if (result.status === 'succeeded') {
         setStage('recovered')
         announce(`Backend confirmed success · plan ${backendPlan.plan_id}`)
+        try {
+          pushLog(`draft_notifications({ plan_id: "${backendPlan.plan_id}" })`)
+          const draft = await mcp.draftNotifications(backendPlan.plan_id)
+          setNotificationDraft(draft)
+          pushLog(`// draft ready hash=${String(draft.content_hash).slice(0, 16)}…`)
+        } catch (e: any) {
+          pushLog(`// draft_notifications note: ${e?.message || e}`)
+        }
       } else if (result.status === 'failed_rolled_back' || result.status === 'partially_failed') {
         setStage('partial_failure')
         announce(`Backend reported ${result.status}`)
@@ -358,7 +366,33 @@ function App() {
     }
   }
 
-  const resetDemo  const resetDemo = () => {
+  const sendNotificationAction = async () => {
+    if (!backendPlan || !notificationDraft || sendingNotif) return
+    setSendingNotif(true)
+    const log = [...toolLog]
+    const pushLog = (line: string) => { log.push(line); setToolLog([...log]) }
+    try {
+      pushLog(`approve_notifications({ plan_id: "${backendPlan.plan_id}", draft_hash: "${notificationDraft.content_hash.slice(0, 16)}…" })`)
+      const ap = await mcp.approveNotifications(backendPlan.plan_id, notificationDraft.content_hash)
+      if (!ap.ok) throw new Error(ap.message || ap.error || 'Notification approval failed')
+
+      pushLog(`send_notifications({ plan_id: "${backendPlan.plan_id}", draft_hash: "${notificationDraft.content_hash.slice(0, 16)}…" })`)
+      const sent = await mcp.sendNotifications(backendPlan.plan_id, notificationDraft.content_hash)
+      if (!sent.ok) throw new Error(sent.message || sent.error || 'Failed to send notification')
+
+      setNotificationSent(true)
+      announce(`Notification sent to Sam (${(sent.sent || []).length} message delivered via mock provider)`)
+      pushLog(`// notification sent provider=simulated count=${(sent.sent || []).length}`)
+    } catch (e: any) {
+      const msg = e?.message || String(e)
+      announce(`Could not send notification: ${msg}`)
+      pushLog(`// notification error: ${msg}`)
+    } finally {
+      setSendingNotif(false)
+    }
+  }
+
+  const resetDemo = () => {
     setStage('review')
     setRawCallsOpen(false)
     setNotificationSent(false)
