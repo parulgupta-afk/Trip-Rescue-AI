@@ -151,7 +151,12 @@ cd simulator
 npm install
 cd ..
 ```
+# Terminal 2: Launch Frontend Simulator
+.\run-frontend.ps1
 
+
+# Terminal 3: Launch Backend Simulator
+.\run-backend.ps1
 ---
 
 ## Configuration & Environment Variables
